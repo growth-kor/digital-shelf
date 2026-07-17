@@ -113,9 +113,23 @@ export default function App() {
   }, []);
 
   const fetchBooks = async uid => {
-    const q = query(collection(db, 'books'), where('userId', '==', uid), orderBy('createdAt', 'desc'));
-    const snap = await getDocs(q);
-    setBooks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    try {
+      const q = query(collection(db, 'books'), where('userId', '==', uid));
+      const snap = await getDocs(q);
+      const fetchedBooks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      
+      // index 없이 동작하도록 JS 메모리에서 정렬 처리
+      fetchedBooks.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || 0;
+        const timeB = b.createdAt?.seconds || 0;
+        return timeB - timeA;
+      });
+      
+      setBooks(fetchedBooks);
+    } catch (err) {
+      console.error("fetchBooks error:", err);
+      alert("도서 목록 로드 실패 / Failed to load book list: " + err.message);
+    }
   };
 
   useEffect(() => {
@@ -375,9 +389,15 @@ export default function App() {
         </div>
 
         {uploading && (
-          <div className="upload-progress-bar">
-            <div className="upload-progress-fill" style={{ width: `${progress}%` }} />
-            <span className="upload-progress-label">UPLOADING {progress}%</span>
+          <div className="upload-overlay">
+            <div className="upload-card">
+              <h3>PDF 업로드 중 / Uploading PDF</h3>
+              <div className="upload-progress-track">
+                <div className="upload-progress-fill" style={{ width: `${progress}%` }} />
+              </div>
+              <span className="upload-percentage">{progress}%</span>
+              <p>서버에 파일을 안전하게 전송하는 중입니다 / Sending file to server</p>
+            </div>
           </div>
         )}
 
@@ -643,15 +663,36 @@ const css = `
   }
   .empty-shelf:hover { border-color: #2b5c4f; color: #2b5c4f; background: #fdfdfc; }
 
-  /* Upload Progress */
-  .upload-progress-bar {
-    position: fixed; top: 0; left: 0; right: 0; height: 4px;
-    background: #e8e5df; z-index: 100; overflow: visible;
+  /* Upload Progress Overlay */
+  .upload-overlay {
+    position: fixed; inset: 0; z-index: 500;
+    background: rgba(250, 249, 246, 0.8);
+    backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center;
   }
-  .upload-progress-fill { height: 100%; background: #2b5c4f; transition: width .3s; }
-  .upload-progress-label {
-    position: absolute; top: 12px; right: 24px;
-    font-family: 'DM Mono', monospace; font-size: 11px; color: #2b5c4f; letter-spacing: 1px; font-weight: 700;
+  .upload-card {
+    background: #ffffff; border: 1px solid #e8e5df; border-radius: 24px;
+    padding: 40px; width: 360px; text-align: center;
+    box-shadow: 0 12px 40px rgba(27,32,46,.06);
+  }
+  .upload-card h3 {
+    font-family: 'Playfair Display', serif; font-size: 18px; font-weight: 700;
+    color: #1b202e; margin-bottom: 20px;
+  }
+  .upload-progress-track {
+    height: 8px; background: #e8e5df; border-radius: 99px;
+    overflow: hidden; margin-bottom: 12px;
+  }
+  .upload-progress-fill {
+    height: 100%; background: #2b5c4f; border-radius: 99px;
+    transition: width 0.2s ease;
+  }
+  .upload-percentage {
+    font-family: 'DM Mono', monospace; font-size: 14px; font-weight: 700;
+    color: #2b5c4f; display: block; margin-bottom: 16px;
+  }
+  .upload-card p {
+    font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
   /* Reader Screen */
