@@ -47,7 +47,7 @@ const Page = React.forwardRef(({ pdfDoc, number }, ref) => {
   );
 });
 
-function LoadingOverlay() {
+function LoadingOverlay({ progress }) {
   return (
     <div className="loading-overlay">
       <div className="loading-content">
@@ -57,6 +57,7 @@ function LoadingOverlay() {
           ))}
         </div>
         <p className="loading-label">OPENING ARCHIVE</p>
+        <span className="loading-progress-val">{progress || '0%'}</span>
         <div className="loading-dots">
           <span style={{ animationDelay: '0s' }} />
           <span style={{ animationDelay: '0.2s' }} />
@@ -77,6 +78,7 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [pdfDoc, setPdfDoc] = useState(null);
   const [isOpening, setIsOpening] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState('0%');
   const [globalUsage, setGlobalUsage] = useState(0);
   const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
@@ -135,14 +137,34 @@ export default function App() {
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
-    pdfjsLib.getDocument({ url: selectedBook.url, cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', cMapPacked: true })
-      .promise.then(pdf => { setPdfDoc(pdf); setTimeout(() => setIsOpening(false), 600); })
-      .catch(err => {
-        console.error("PDF 로드 에러:", err);
-        alert("PDF 로드 실패 / Failed to load PDF: " + err.message);
-        setIsOpening(false);
-        setSelectedBook(null);
-      });
+    setDownloadProgress('0%');
+    
+    const loadingTask = pdfjsLib.getDocument({ 
+      url: selectedBook.url, 
+      cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', 
+      cMapPacked: true 
+    });
+
+    loadingTask.onProgress = (progressData) => {
+      if (progressData.total > 0) {
+        const percent = Math.round((progressData.loaded / progressData.total) * 100);
+        setDownloadProgress(`${percent}%`);
+      } else {
+        const loadedMB = (progressData.loaded / 1024 / 1024).toFixed(1);
+        setDownloadProgress(`${loadedMB} MB`);
+      }
+    };
+
+    loadingTask.promise.then(pdf => { 
+      setPdfDoc(pdf); 
+      setTimeout(() => setIsOpening(false), 600); 
+    })
+    .catch(err => {
+      console.error("PDF 로드 에러:", err);
+      alert("PDF 로드 실패 / Failed to load PDF: " + err.message);
+      setIsOpening(false);
+      setSelectedBook(null);
+    });
   }, [selectedBook]);
 
   const handleJump = () => {
@@ -435,7 +457,7 @@ export default function App() {
     <>
       <style>{css}</style>
       <div className="reader-screen">
-        {isOpening && <LoadingOverlay />}
+        {isOpening && <LoadingOverlay progress={downloadProgress} />}
         <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
           <>
@@ -741,6 +763,10 @@ const css = `
     animation: flip-page 1s ease-in-out infinite; transform-origin: bottom center; opacity: .7;
   }
   .loading-label { font-family: 'DM Mono', monospace; font-size: 11px; color: #6b7080; letter-spacing: 4px; font-weight: 700; }
+  .loading-progress-val {
+    font-family: 'DM Mono', monospace; font-size: 16px; font-weight: 700;
+    color: #2b5c4f; margin-top: -12px; margin-bottom: 8px;
+  }
   .loading-dots { display: flex; gap: 6px; }
   .loading-dots span {
     width: 4px; height: 4px; border-radius: 50%; background: #2b5c4f;
