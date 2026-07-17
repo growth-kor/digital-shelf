@@ -322,7 +322,7 @@ export default function App() {
               <p>본 서비스는 학습용 PDF 파일을 플립북 형태로 감상하는 개인 서재 웹 프로그램입니다.</p>
               <p>구글 로그인 후 본인 소유의 PDF 문서를 업로드하여 자유롭게 읽으실 수 있습니다.</p>
               <p><strong>무료 회원 (로컬 리더)</strong>: 올린 파일은 서버에 저장되지 않고 브라우저에 임시로 로딩되어 즉시 동작합니다. 파일당 500MB 이하, 최대 5권까지 동시에 책장에 띄울 수 있습니다.</p>
-              <p><strong>유료 회원 (클라우드 서재)</strong>: 올린 책이 Firebase 클라우드 공간에 영구 저장되어, 언제 어디서든 로그인만 하면 서재를 동기화하여 읽을 수 있습니다. (전체 저장소 제한 5GB)</p>
+              <p><strong>유료 회원 (클라우드 서재)</strong>: 올린 책이 Firebase 클라우드 공간에 영구 저장되어, 언제 어디서든 로그인만 하면 서재를 동기화하여 읽을 수 있습니다.</p>
             </div>
             <div className="info-divider" />
             <div className="info-block">
@@ -330,7 +330,7 @@ export default function App() {
               <p>This service is a private library web app for reading study PDF files in a flipbook format.</p>
               <p>After logging in with Google, you can upload and read your own PDF documents.</p>
               <p><strong>Free Member (Local Reader)</strong>: Uploaded files are not saved on the server but temporarily loaded in the browser. Max 500MB per file, up to 5 concurrent books on the shelf.</p>
-              <p><strong>Paid Member (Cloud Library)</strong>: Uploaded books are permanently stored in the Firebase cloud space, synchronized across all devices when you log in. (Total storage limit 5GB)</p>
+              <p><strong>Paid Member (Cloud Library)</strong>: Uploaded books are permanently stored in the Firebase cloud space, synchronized across all devices when you log in.</p>
             </div>
           </div>
           <div className="membership-status">
