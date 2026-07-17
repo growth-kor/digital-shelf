@@ -97,7 +97,12 @@ export default function App() {
     setIsOpening(true);
     pdfjsLib.getDocument({ url: selectedBook.url, cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', cMapPacked: true })
       .promise.then(pdf => { setPdfDoc(pdf); setTimeout(() => setIsOpening(false), 600); })
-      .catch(() => { alert('로딩 실패'); setIsOpening(false); setSelectedBook(null); });
+      .catch(err => {
+        console.error("PDF 로딩 실패:", err);
+        alert('로딩 실패: ' + err.message);
+        setIsOpening(false);
+        setSelectedBook(null);
+      });
   }, [selectedBook]);
 
   const handleJump = () => {
