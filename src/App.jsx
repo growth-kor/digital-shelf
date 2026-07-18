@@ -25,7 +25,8 @@ const Page = React.forwardRef(({ pdfDoc, number }, ref) => {
       if (!pdfDoc) return;
       try {
         const page = await pdfDoc.getPage(number);
-        const vp = page.getViewport({ scale: 1.5 });
+        // 선명한 고해상도 렌더링을 위해 스케일을 2.0으로 상향
+        const vp = page.getViewport({ scale: 2.0 });
         const canvas = canvasRef.current;
         if (!canvas || !alive) return;
         canvas.height = vp.height; canvas.width = vp.width;
@@ -82,6 +83,8 @@ export default function App() {
   const [globalUsage, setGlobalUsage] = useState(0);
   const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  
+  const dragCounter = useRef(0);
   const bookRef = useRef(null);
   const fileInputRef = useRef(null);
   const LIMIT = 5 * 1024 * 1024 * 1024; // 5.00 GB
@@ -120,7 +123,7 @@ export default function App() {
       const snap = await getDocs(q);
       const fetchedBooks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       
-      // index 없이 동작하도록 JS 메모리에서 정렬 처리
+      // index 없이 작동하도록 JS 메모리 정렬
       fetchedBooks.sort((a, b) => {
         const timeA = a.createdAt?.seconds || 0;
         const timeB = b.createdAt?.seconds || 0;
@@ -174,6 +177,35 @@ export default function App() {
       setPageInput('');
     } else {
       alert(`1 ~ ${pdfDoc?.numPages} 사이를 입력하세요 / Enter between 1 and ${pdfDoc?.numPages}`);
+    }
+  };
+
+  // 전역 드래그 앤 드롭 이벤트 핸들러
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current === 0) {
+      setDragOver(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    dragCounter.current = 0;
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      doUpload(e.dataTransfer.files[0]);
     }
   };
 
@@ -330,10 +362,18 @@ export default function App() {
     <>
       <style>{css}</style>
       <div className="shelf-screen"
-        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={e => { e.preventDefault(); setDragOver(false); doUpload(e.dataTransfer.files[0]); }}>
-        {dragOver && <div className="drop-zone"><Upload size={48} /><p>DROP PDF HERE</p></div>}
+        onDragEnter={handleDragEnter}
+        onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}>
+        
+        {dragOver && (
+          <div className="drop-zone" onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+            <Upload size={56} strokeWidth={1.5} />
+            <p>DROP PDF ANYWHERE</p>
+            <span>페이지 어디든 파일만 올려두면 바로 책장에 등록됩니다 / Drop file anywhere</span>
+          </div>
+        )}
         
         <header className="shelf-header">
           <h1 className="shelf-title">PDF SHELF</h1>
@@ -380,32 +420,25 @@ export default function App() {
           </div>
         </div>
 
-        {/* Usage Stats (Progress Bar) */}
+        {/* Shared Storage Usage Stats (모든 회원이 공유 사용량을 실시간으로 확인) */}
         <div className="usage-wrap">
           <div className="usage-left">
             <span className="usage-title">
-              {isCloudUser ? "서버 저장소 사용량 / Cloud Storage Usage" : "책장 등록 개수 / Local Book Slots"}
+              프로젝트 공유 저장소 사용량 / Shared Project Storage Usage
             </span>
             <div className="usage-bar-track">
               <div 
                 className="usage-bar-fill" 
                 style={{ 
-                  width: isCloudUser 
-                    ? `${Math.min(100, (globalUsage / LIMIT) * 100)}%` 
-                    : `${(localBooks.length / 5) * 100}%`,
-                  background: isCloudUser
-                    ? (globalUsage > LIMIT * 0.9 ? '#cc7452' : '#2b5c4f')
-                    : (localBooks.length >= 5 ? '#cc7452' : '#2b5c4f')
+                  width: `${Math.min(100, (globalUsage / LIMIT) * 100)}%`,
+                  background: globalUsage > LIMIT * 0.9 ? '#cc7452' : '#2b5c4f'
                 }} 
               />
             </div>
           </div>
           <div className="usage-right">
             <span className="usage-value">
-              {isCloudUser 
-                ? `${(globalUsage / 1024 / 1024 / 1024).toFixed(2)} / 5.00 GB`
-                : `${localBooks.length} / 5 slots`
-              }
+              {(globalUsage / 1024 / 1024 / 1024).toFixed(2)} / 5.00 GB
             </span>
           </div>
         </div>
@@ -463,12 +496,12 @@ export default function App() {
           <>
             <div className="flipbook-wrap">
               <HTMLFlipBook
-                width={480} height={680}
+                width={640} height={900}
                 size="stretch"
-                minWidth={260} maxWidth={560}
-                minHeight={380} maxHeight={860}
+                minWidth={300} maxWidth={2400}
+                minHeight={400} maxHeight={3200}
                 showCover={true}
-                maxShadowOpacity={0.4}
+                maxShadowOpacity={0.35}
                 mobileScrollSupport={true}
                 ref={bookRef}>
                 {[...Array(pdfDoc.numPages)].map((_, i) => <Page key={i} number={i + 1} pdfDoc={pdfDoc} />)}
@@ -564,12 +597,13 @@ const css = `
     max-width: 1200px; margin: 0 auto;
   }
   .drop-zone {
-    position: fixed; inset: 0; z-index: 999; background: rgba(43,92,79,.05);
+    position: fixed; inset: 0; z-index: 999; background: rgba(250,249,246,.92);
     border: 3px dashed #2b5c4f; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 16px;
-    font-size: 20px; font-weight: 700; letter-spacing: 4px; color: #2b5c4f;
-    backdrop-filter: blur(4px);
+    font-size: 24px; font-weight: 800; letter-spacing: 2px; color: #2b5c4f;
+    backdrop-filter: blur(8px);
   }
+  .drop-zone span { font-size: 13px; font-weight: 600; color: #6b7080; letter-spacing: 0; }
   .shelf-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 36px; border-bottom: 1px solid #e8e5df; padding-bottom: 24px; }
   .shelf-title { font-family: 'Playfair Display', serif; font-size: 44px; font-weight: 800; letter-spacing: -1.5px; color: #1b202e; line-height: 1; }
   .shelf-header-right { display: flex; align-items: center; gap: 16px; }
@@ -717,13 +751,13 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* Reader Screen */
+  /* Reader Screen - 반응형 풀스크린 지원 */
   .reader-screen {
-    height: 100dvh; background: #f5f3ed;
+    height: 100dvh; width: 100vw; background: #f5f3ed;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     position: relative; font-family: 'Outfit', sans-serif;
-    overflow: visible;
+    overflow: hidden; padding: 0;
   }
   .reader-close {
     position: fixed; top: 16px; left: 16px; z-index: 200;
@@ -736,14 +770,13 @@ const css = `
   .reader-close:hover { background: #f7f4eb; color: #cc7452; border-color: #cc7452; }
 
   .flipbook-wrap {
-    width: 100%;
-    max-width: 100vw;
-    height: calc(100dvh - 76px);
+    width: 100vw;
+    height: calc(100dvh - 68px);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 12px 24px 0;
-    overflow: visible;
+    padding: 8px 16px;
+    overflow: hidden;
   }
 
   /* Loading overlay */
