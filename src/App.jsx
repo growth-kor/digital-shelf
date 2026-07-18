@@ -89,8 +89,9 @@ export default function App() {
   const [globalUsage, setGlobalUsage] = useState(0);
   const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const [currentPage, setCurrentPage] = useState(0);
   
-  // 화면 짤림 방지용 반응형 플립북 규격 상태
+  // 화면 짤림 방지 및 최대 넓이 채우기 알고리즘 규격
   const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
 
   const dragCounter = useRef(0);
@@ -145,47 +146,70 @@ export default function App() {
     }
   };
 
-  // PDF 비율과 화면 크기를 계산하여 100% 짤림 없는 딱 맞는 치수 계산
+  // 사용자 제안 알고리즘: 세로 맞춤과 가로 맞춤 중 최대 면적(Area)을 사용하는 규격 자동 계산
   const updateDimensions = (pdf) => {
     if (!pdf) return;
     pdf.getPage(1).then(page => {
       const vp = page.getViewport({ scale: 1.0 });
-      const aspect = vp.width / vp.height; // 단일 페이지 가로/세로 비율
+      const aspect = vp.width / vp.height; // 단일 페이지 비율
 
-      // 툴바 및 마진 제외한 최대 가용 해상도
-      const maxH = Math.max(300, window.innerHeight - 100); 
-      const maxW = Math.max(400, window.innerWidth - 40);  
+      const isFull = !!document.fullscreenElement;
+      // 풀스크린 상태에서는 여백을 극도로 줄임
+      const maxH = Math.max(300, window.innerHeight - (isFull ? 16 : 48)); 
+      const maxW = Math.max(400, window.innerWidth - (isFull ? 12 : 24));  
 
-      // 양면(2페이지) 펼침 기준 계산
-      let pageH = maxH;
-      let pageW = pageH * aspect;
+      // 옵션 A: 세로에 딱 맞추는 경우
+      let pageH_A = maxH;
+      let pageW_A = pageH_A * aspect;
+      let validA = (pageW_A * 2 <= maxW);
 
-      // 양면 가로 폭이 화면 가로 한도를 넘어가면 가로 기준으로 세로 축소
-      if (pageW * 2 > maxW) {
-        pageW = maxW / 2;
-        pageH = pageW / aspect;
+      // 옵션 B: 가로에 딱 맞추는 경우
+      let pageW_B = maxW / 2;
+      let pageH_B = pageW_B / aspect;
+      let validB = (pageH_B <= maxH);
+
+      let finalW, finalH;
+
+      if (validA && validB) {
+        // 둘 다 가능한 경우 면적이 더 큰 쪽(가로/세로 중 더 많이 채우는 쪽) 선택
+        const areaA = (pageW_A * 2) * pageH_A;
+        const areaB = (pageW_B * 2) * pageH_B;
+        if (areaA >= areaB) {
+          finalW = pageW_A; finalH = pageH_A;
+        } else {
+          finalW = pageW_B; finalH = pageH_B;
+        }
+      } else if (validA) {
+        finalW = pageW_A; finalH = pageH_A;
+      } else {
+        finalW = pageW_B; finalH = pageH_B;
       }
 
       setDimensions({
-        width: Math.floor(pageW),
-        height: Math.floor(pageH)
+        width: Math.floor(finalW),
+        height: Math.floor(finalH)
       });
     });
   };
 
-  // 창 크기 변경 시 자동 재계산
+  // 창 크기 조절 및 전체 화면 전환 시 딜레이 없는 즉시 재계산
   useEffect(() => {
     const handleResize = () => {
       if (pdfDoc) updateDimensions(pdfDoc);
     };
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener('fullscreenchange', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('fullscreenchange', handleResize);
+    };
   }, [pdfDoc]);
 
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
     setDownloadProgress('0%');
+    setCurrentPage(0);
     
     const loadingTask = pdfjsLib.getDocument({ 
       url: selectedBook.url, 
@@ -536,17 +560,21 @@ export default function App() {
         <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
           <>
-            <div className="flipbook-wrap">
+            <div className="flipbook-wrap" style={{
+              transform: currentPage === 0 ? `translateX(-${dimensions.width / 2}px)` : 'translateX(0)',
+              transition: 'transform 0.35s ease'
+            }}>
               <HTMLFlipBook
                 key={`${dimensions.width}-${dimensions.height}`}
                 width={dimensions.width}
                 height={dimensions.height}
                 size="fixed"
-                minWidth={200} maxWidth={2400}
-                minHeight={300} maxHeight={3200}
+                minWidth={200} maxWidth={3200}
+                minHeight={300} maxHeight={4000}
                 showCover={true}
                 maxShadowOpacity={0.35}
                 mobileScrollSupport={true}
+                onFlip={e => setCurrentPage(e.data)}
                 ref={bookRef}>
                 {[...Array(pdfDoc.numPages)].map((_, i) => (
                   <Page 
@@ -802,7 +830,7 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* Reader Screen - 짤림 없는 100% 자동 맞춤 반응형 */
+  /* Reader Screen - 최대 면적 100% 활용 오토핏 */
   .reader-screen {
     height: 100dvh; width: 100vw; background: #f5f3ed;
     display: flex; flex-direction: column;
@@ -813,20 +841,20 @@ const css = `
   .reader-close {
     position: fixed; top: 16px; left: 16px; z-index: 200;
     width: 38px; height: 38px; border-radius: 50%; border: 1px solid #e8e5df;
-    background: #ffffff;
+    background: rgba(255, 255, 255, 0.9);
     display: flex; align-items: center; justify-content: center;
     color: #1b202e; cursor: pointer; transition: all .2s;
-    box-shadow: 0 4px 15px rgba(27,32,46,.04);
+    box-shadow: 0 4px 15px rgba(27,32,46,.06);
+    backdrop-filter: blur(8px);
   }
   .reader-close:hover { background: #f7f4eb; color: #cc7452; border-color: #cc7452; }
 
   .flipbook-wrap {
     width: 100vw;
-    height: calc(100dvh - 76px);
+    height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 10px 16px;
     overflow: hidden;
   }
 
@@ -857,14 +885,15 @@ const css = `
     animation: dot-pulse 1.2s ease-in-out infinite;
   }
 
-  /* Reader toolbar */
+  /* Reader toolbar - 하단 반투명 오버레이 처리로 뷰어 공간을 차지하지 않음 */
   .reader-toolbar {
-    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-    z-index: 100; display: flex; align-items: center; gap: 6px;
-    background: #ffffff;
-    border: 1px solid #e8e5df; border-radius: 20px;
-    padding: 6px 12px; height: 52px;
-    box-shadow: 0 10px 30px rgba(27,32,46,.06);
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 200; display: flex; align-items: center; gap: 6px;
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(232, 229, 223, 0.8); border-radius: 20px;
+    padding: 4px 12px; height: 48px;
+    box-shadow: 0 10px 30px rgba(27,32,46,.08);
   }
   .tb-btn {
     width: 38px; height: 38px; border-radius: 10px; border: none;
