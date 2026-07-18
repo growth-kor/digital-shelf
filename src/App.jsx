@@ -9,35 +9,41 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-// 관리자 및 지정된 친구 이메일 목록 (쉽게 여기에서 추가/삭제하여 관리할 수 있습니다)
-// Whitelist of authorized emails (easy to manage by editing this array)
+// 관리자 및 지정된 친구 이메일 목록
 const AUTHORIZED_EMAILS = [
   'skateboard4335@gmail.com',
   'jeki4332@gmail.com'
 ];
 
-const Page = React.forwardRef(({ pdfDoc, number }, ref) => {
+const Page = React.forwardRef(({ pdfDoc, number, pageHeight }, ref) => {
   const canvasRef = useRef(null);
   const [rendered, setRendered] = useState(false);
+
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!pdfDoc) return;
       try {
         const page = await pdfDoc.getPage(number);
-        // 선명한 고해상도 렌더링을 위해 스케일을 2.0으로 상향
-        const vp = page.getViewport({ scale: 2.0 });
+        const unscaledVp = page.getViewport({ scale: 1.0 });
+        
+        // 화면 높이에 맞춰 2배 고해상도로 선명하게 렌더링
+        const targetScale = pageHeight ? (pageHeight / unscaledVp.height) * 2.0 : 2.0;
+        const vp = page.getViewport({ scale: targetScale });
+        
         const canvas = canvasRef.current;
         if (!canvas || !alive) return;
-        canvas.height = vp.height; canvas.width = vp.width;
+        canvas.height = vp.height; 
+        canvas.width = vp.width;
         await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
         if (alive) setRendered(true);
       } catch (e) { console.error(e); }
     })();
     return () => { alive = false; };
-  }, [pdfDoc, number]);
+  }, [pdfDoc, number, pageHeight]);
+
   return (
-    <div ref={ref} style={{ background: '#fff', width: '100%', height: '100%', position: 'relative' }}>
+    <div ref={ref} style={{ background: '#fff', width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
       <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
       {!rendered && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#faf9f6' }}>
@@ -73,8 +79,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isCloudUser, setIsCloudUser] = useState(false);
   const [selectedBook, setSelectedBook] = useState(null);
-  const [books, setBooks] = useState([]); // Cloud users' books
-  const [localBooks, setLocalBooks] = useState([]); // Free users' books
+  const [books, setBooks] = useState([]);
+  const [localBooks, setLocalBooks] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pdfDoc, setPdfDoc] = useState(null);
@@ -84,6 +90,9 @@ export default function App() {
   const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
   
+  // 화면 짤림 방지용 반응형 플립북 규격 상태
+  const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
+
   const dragCounter = useRef(0);
   const bookRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -123,7 +132,6 @@ export default function App() {
       const snap = await getDocs(q);
       const fetchedBooks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       
-      // index 없이 작동하도록 JS 메모리 정렬
       fetchedBooks.sort((a, b) => {
         const timeA = a.createdAt?.seconds || 0;
         const timeB = b.createdAt?.seconds || 0;
@@ -136,6 +144,43 @@ export default function App() {
       alert("도서 목록 로드 실패 / Failed to load book list: " + err.message);
     }
   };
+
+  // PDF 비율과 화면 크기를 계산하여 100% 짤림 없는 딱 맞는 치수 계산
+  const updateDimensions = (pdf) => {
+    if (!pdf) return;
+    pdf.getPage(1).then(page => {
+      const vp = page.getViewport({ scale: 1.0 });
+      const aspect = vp.width / vp.height; // 단일 페이지 가로/세로 비율
+
+      // 툴바 및 마진 제외한 최대 가용 해상도
+      const maxH = Math.max(300, window.innerHeight - 100); 
+      const maxW = Math.max(400, window.innerWidth - 40);  
+
+      // 양면(2페이지) 펼침 기준 계산
+      let pageH = maxH;
+      let pageW = pageH * aspect;
+
+      // 양면 가로 폭이 화면 가로 한도를 넘어가면 가로 기준으로 세로 축소
+      if (pageW * 2 > maxW) {
+        pageW = maxW / 2;
+        pageH = pageW / aspect;
+      }
+
+      setDimensions({
+        width: Math.floor(pageW),
+        height: Math.floor(pageH)
+      });
+    });
+  };
+
+  // 창 크기 변경 시 자동 재계산
+  useEffect(() => {
+    const handleResize = () => {
+      if (pdfDoc) updateDimensions(pdfDoc);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [pdfDoc]);
 
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
@@ -160,6 +205,7 @@ export default function App() {
 
     loadingTask.promise.then(pdf => { 
       setPdfDoc(pdf); 
+      updateDimensions(pdf);
       setTimeout(() => setIsOpening(false), 600); 
     })
     .catch(err => {
@@ -180,7 +226,6 @@ export default function App() {
     }
   };
 
-  // 전역 드래그 앤 드롭 이벤트 핸들러
   const handleDragEnter = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -216,15 +261,13 @@ export default function App() {
       return;
     }
     
-    // 파일 크기 제한 (모두에게 500MB 제한 적용)
-    const MAX_SIZE = 500 * 1024 * 1024; // 500MB
+    const MAX_SIZE = 500 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       alert('파일 크기가 500MB를 초과합니다. / File size exceeds 500MB.');
       return;
     }
 
     if (!isCloudUser) {
-      // 무료 회원: 등록 개수 제한 체크 (최대 5권)
       if (localBooks.length >= 5) {
         alert('무료 회원은 최대 5권까지만 추가할 수 있습니다. / Free members can only add up to 5 books.');
         return;
@@ -242,7 +285,6 @@ export default function App() {
       return;
     }
 
-    // 유료 클라우드 회원: Firebase Storage 업로드 및 Firestore 기록
     setUploading(true); 
     setProgress(0);
     const sRef = ref(storage, `pdfs/${user.uid}/${Date.now()}_${file.name}`);
@@ -282,7 +324,7 @@ export default function App() {
   };
 
   const deleteBook = async (book, e) => {
-    e.stopPropagation(); // 카드 클릭 이벤트 차단
+    e.stopPropagation();
     
     const confirmMsg = isCloudUser 
       ? '이 책을 서버에서 완전히 삭제하시겠습니까? / Are you sure you want to permanently delete this book from the server?' 
@@ -420,7 +462,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Shared Storage Usage Stats (모든 회원이 공유 사용량을 실시간으로 확인) */}
+        {/* Shared Storage Usage Stats */}
         <div className="usage-wrap">
           <div className="usage-left">
             <span className="usage-title">
@@ -496,15 +538,24 @@ export default function App() {
           <>
             <div className="flipbook-wrap">
               <HTMLFlipBook
-                width={640} height={900}
-                size="stretch"
-                minWidth={300} maxWidth={2400}
-                minHeight={400} maxHeight={3200}
+                key={`${dimensions.width}-${dimensions.height}`}
+                width={dimensions.width}
+                height={dimensions.height}
+                size="fixed"
+                minWidth={200} maxWidth={2400}
+                minHeight={300} maxHeight={3200}
                 showCover={true}
                 maxShadowOpacity={0.35}
                 mobileScrollSupport={true}
                 ref={bookRef}>
-                {[...Array(pdfDoc.numPages)].map((_, i) => <Page key={i} number={i + 1} pdfDoc={pdfDoc} />)}
+                {[...Array(pdfDoc.numPages)].map((_, i) => (
+                  <Page 
+                    key={i} 
+                    number={i + 1} 
+                    pdfDoc={pdfDoc} 
+                    pageHeight={dimensions.height} 
+                  />
+                ))}
               </HTMLFlipBook>
             </div>
             <div className="reader-toolbar">
@@ -751,7 +802,7 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* Reader Screen - 반응형 풀스크린 지원 */
+  /* Reader Screen - 짤림 없는 100% 자동 맞춤 반응형 */
   .reader-screen {
     height: 100dvh; width: 100vw; background: #f5f3ed;
     display: flex; flex-direction: column;
@@ -771,11 +822,11 @@ const css = `
 
   .flipbook-wrap {
     width: 100vw;
-    height: calc(100dvh - 68px);
+    height: calc(100dvh - 76px);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 16px;
+    padding: 10px 16px;
     overflow: hidden;
   }
 
