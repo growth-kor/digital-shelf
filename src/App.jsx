@@ -16,7 +16,7 @@ const AUTHORIZED_EMAILS = [
 const fileCache = new Map();
 const localFileMap = new Map();
 
-// 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트
+// 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트 (100% 정밀 핏)
 function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   const canvasRef = useRef(null);
 
@@ -28,7 +28,11 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
       try {
         const page = await pdfDoc.getPage(pageNum);
         const unscaledVp = page.getViewport({ scale: 1.0 });
-        const targetScale = height ? (height / unscaledVp.height) * 2.0 : 2.0;
+        
+        // 너비와 높이에 100% 정확하게 맞추는 렌더링 스케일 계산 (2배 고해상도)
+        const scaleX = width / unscaledVp.width;
+        const scaleY = height / unscaledVp.height;
+        const targetScale = Math.min(scaleX, scaleY) * 2.0;
         const vp = page.getViewport({ scale: targetScale });
 
         const canvas = canvasRef.current;
@@ -42,37 +46,107 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
     })();
 
     return () => { alive = false; };
-  }, [pdfDoc, pageNum, height]);
+  }, [pdfDoc, pageNum, width, height]);
 
   if (!pageNum || pageNum < 1 || pageNum > pdfDoc?.numPages) {
     return <div style={{ width, height, background: 'transparent' }} />;
   }
 
-  let boxShadow = '0 10px 30px rgba(0,0,0,0.12)';
+  let boxShadow = '0 8px 30px rgba(0,0,0,0.12)';
   if (shadowType === 'left') {
-    boxShadow = '-6px 6px 18px rgba(0,0,0,0.06), inset -10px 0 15px -8px rgba(0,0,0,0.12)';
+    boxShadow = '-4px 4px 16px rgba(0,0,0,0.06), inset -12px 0 16px -10px rgba(0,0,0,0.15)';
   } else if (shadowType === 'right') {
-    boxShadow = '6px 6px 18px rgba(0,0,0,0.06), inset 10px 0 15px -8px rgba(0,0,0,0.12)';
+    boxShadow = '4px 4px 16px rgba(0,0,0,0.06), inset 12px 0 16px -10px rgba(0,0,0,0.15)';
   }
 
   return (
     <div style={{
       width, height, background: '#ffffff', position: 'relative',
       overflow: 'hidden', boxShadow, transition: 'all 0.15s ease',
-      borderRadius: '4px'
+      borderRadius: shadowType === 'left' ? '4px 0 0 4px' : (shadowType === 'right' ? '0 4px 4px 0' : '4px')
     }}>
-      <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+      <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
     </div>
   );
 }
 
-// 최고 속도, 최고 화질, 100% 정중앙 뷰어 컴포넌트
-function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage }) {
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어
+function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
   const [showToolbar, setShowToolbar] = useState(true);
+  const [pageAspect, setPageAspect] = useState(0.707); // 기본 A4 비율
+  const [dimensions, setDimensions] = useState({ singleW: 400, singleH: 600 });
   const timerRef = useRef(null);
   const numPages = pdfDoc.numPages;
+
+  // 첫 페이지 종횡비 가져오기
+  useEffect(() => {
+    if (pdfDoc) {
+      pdfDoc.getPage(1).then(page => {
+        const vp = page.getViewport({ scale: 1.0 });
+        setPageAspect(vp.width / vp.height);
+      });
+    }
+  }, [pdfDoc]);
+
+  const isPortrait = window.innerWidth < window.innerHeight;
+  const showTwoPage = isTwoPage && !isPortrait && currentPage > 1;
+
+  // 화면 크기 및 1P/2P 모드에 따라 딱 들어맞는 단일 페이지 규격 정밀 계산
+  useEffect(() => {
+    const calcDimensions = () => {
+      const isFull = !!document.fullscreenElement;
+      const topSpace = isFull ? 12 : 54;
+      const bottomSpace = isFull ? 12 : 64;
+      
+      const maxH = Math.max(200, window.innerHeight - topSpace - bottomSpace);
+      const maxW = Math.max(200, window.innerWidth - (isFull ? 16 : 32));
+
+      let singleW, singleH;
+
+      if (showTwoPage) {
+        // 2페이지 양면 모드: 두 페이지가 maxW, maxH 공간 안에 꽉 차도록 계산
+        const doubleAspect = pageAspect * 2;
+        let h_A = maxH;
+        let w_A_total = h_A * doubleAspect;
+
+        if (w_A_total <= maxW) {
+          singleH = h_A;
+          singleW = h_A * pageAspect;
+        } else {
+          let w_B_total = maxW;
+          singleW = w_B_total / 2;
+          singleH = singleW / pageAspect;
+        }
+      } else {
+        // 1페이지 모드: 단일 페이지가 maxW, maxH 공간 안에 꽉 차도록 계산
+        let h_A = maxH;
+        let w_A = h_A * pageAspect;
+
+        if (w_A <= maxW) {
+          singleH = h_A;
+          singleW = w_A;
+        } else {
+          singleW = maxW;
+          singleH = maxW / pageAspect;
+        }
+      }
+
+      setDimensions({
+        singleW: Math.floor(singleW),
+        singleH: Math.floor(singleH)
+      });
+    };
+
+    calcDimensions();
+    window.addEventListener('resize', calcDimensions);
+    window.addEventListener('fullscreenchange', calcDimensions);
+    return () => {
+      window.removeEventListener('resize', calcDimensions);
+      window.removeEventListener('fullscreenchange', calcDimensions);
+    };
+  }, [pageAspect, showTwoPage]);
 
   const handleMouseMove = () => {
     setShowToolbar(true);
@@ -82,11 +156,8 @@ function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage 
     }, 2500);
   };
 
-  const isPortrait = window.innerWidth < window.innerHeight;
-  const showTwoPage = isTwoPage && !isPortrait;
-
   const turnNext = () => {
-    if (!showTwoPage || currentPage === 1) {
+    if (!showTwoPage) {
       if (currentPage < numPages) setCurrentPage(prev => prev + 1);
     } else {
       if (currentPage + 2 <= numPages) setCurrentPage(prev => prev + 2);
@@ -127,14 +198,11 @@ function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage 
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentPage, showTwoPage, numPages]);
 
-  // 계산된 1페이지당 규격 (양면 모드일 때는 폭을 절반으로 조정)
-  const calcW = showTwoPage && currentPage > 1 ? Math.floor(dimensions.width / 2) : dimensions.width;
-
   return (
     <div className="reader-screen" onMouseMove={handleMouseMove}>
       <button className="reader-close" onClick={onClose}><X size={18} /></button>
 
-      {/* zIndex: 25로 상향하여 PDF 페이지 직접 클릭 시에도 이전/다음 페이지로 즉시 이동 */}
+      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (zIndex 25) */}
       <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
         <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnPrev} title="이전 페이지 (←)" />
         <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnNext} title="다음 페이지 (→)" />
@@ -142,37 +210,37 @@ function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage 
 
       {/* PDF 뷰어 메인 공간 (100% 정중앙 플렉스 레이아웃) */}
       <div style={{ zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {!showTwoPage || currentPage === 1 ? (
-          // 단일 페이지 모드 (화면 최대 정중앙 뷰)
+        {!showTwoPage ? (
+          // 단일 페이지 모드 (표지 또는 1P 모드)
           <PdfCanvasPage
             pdfDoc={pdfDoc}
             pageNum={currentPage}
-            width={calcW}
-            height={dimensions.height}
+            width={dimensions.singleW}
+            height={dimensions.singleH}
             shadowType="single"
           />
         ) : (
-          // 양면 모드 (2페이지 나란히 뷰)
+          // 양면 모드 (2페이지 나란히 뷰 - 책등 입체감 연출)
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <PdfCanvasPage
               pdfDoc={pdfDoc}
               pageNum={currentPage}
-              width={calcW}
-              height={dimensions.height}
+              width={dimensions.singleW}
+              height={dimensions.singleH}
               shadowType="left"
             />
             <PdfCanvasPage
               pdfDoc={pdfDoc}
               pageNum={currentPage + 1 <= numPages ? currentPage + 1 : null}
-              width={calcW}
-              height={dimensions.height}
+              width={dimensions.singleW}
+              height={dimensions.singleH}
               shadowType="right"
             />
           </div>
         )}
       </div>
 
-      {/* 마우스 미조작 시 자동 페이드아웃되는 투명 툴바 */}
+      {/* 하단 툴바 (2.5초 조작 없을 시 자동 페이드아웃) */}
       <div 
         className="reader-toolbar" 
         style={{ 
@@ -190,7 +258,7 @@ function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage 
             type="text" value={pageInput}
             onChange={e => setPageInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && jumpTo(pageInput)}
-            placeholder={!showTwoPage || currentPage === 1 ? `${currentPage}` : `${currentPage}-${Math.min(currentPage + 1, numPages)}`}
+            placeholder={!showTwoPage ? `${currentPage}` : `${currentPage}-${Math.min(currentPage + 1, numPages)}`}
             className="tb-input"
           />
           <button className="tb-jump-btn" onClick={() => jumpTo(pageInput)}><ArrowRight size={14} /></button>
@@ -252,8 +320,7 @@ export default function App() {
   const [globalUsage, setGlobalUsage] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const [pendingFile, setPendingFile] = useState(null);
-  const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
-  const [isTwoPage, setIsTwoPage] = useState(true); // 기본값: 실감나는 2페이지 양면(2P) 뷰어 모드
+  const [isTwoPage, setIsTwoPage] = useState(true); // 기본값: 2페이지 양면(2P) 뷰어 모드
 
   const dragCounter = useRef(0);
   const fileInputRef = useRef(null);
@@ -306,51 +373,6 @@ export default function App() {
     }
   };
 
-  const updateDimensions = (pdf) => {
-    if (!pdf) return;
-    pdf.getPage(1).then(page => {
-      const vp = page.getViewport({ scale: 1.0 });
-      const aspect = vp.width / vp.height;
-
-      const isFull = !!document.fullscreenElement;
-      const topSpace = isFull ? 0 : 54;
-      const bottomSpace = isFull ? 0 : 64;
-      
-      const maxH = Math.max(300, window.innerHeight - topSpace - bottomSpace);
-      const maxW = Math.max(300, window.innerWidth - (isFull ? 0 : 16));
-
-      // 화면에 최대로 꽉 차는 단일 페이지 규격 계산 (비율 100% 보존)
-      let finalW, finalH;
-      let pageH = maxH;
-      let pageW = pageH * aspect;
-
-      if (pageW <= maxW) {
-        finalW = pageW;
-        finalH = pageH;
-      } else {
-        finalW = maxW;
-        finalH = maxW / aspect;
-      }
-
-      setDimensions({
-        width: Math.floor(finalW),
-        height: Math.floor(finalH)
-      });
-    });
-  };
-
-  useEffect(() => {
-    const handleResize = () => {
-      if (pdfDoc) updateDimensions(pdfDoc);
-    };
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('fullscreenchange', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('fullscreenchange', handleResize);
-    };
-  }, [pdfDoc]);
-
   // 초고속 PDF 오픈 (로컬 파일 ArrayBuffer 직렬 처리로 0.05초 로딩)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
@@ -368,7 +390,6 @@ export default function App() {
         });
         loadingTask.promise.then(pdf => {
           setPdfDoc(pdf);
-          updateDimensions(pdf);
           setTimeout(() => setIsOpening(false), 50);
         }).catch(err => {
           console.error("Local PDF ArrayBuffer error:", err);
@@ -408,7 +429,6 @@ export default function App() {
 
     loadingTask.promise.then(pdf => { 
       setPdfDoc(pdf); 
-      updateDimensions(pdf);
       setTimeout(() => setIsOpening(false), 100); 
     })
     .catch(err => {
@@ -617,7 +637,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 1</h1>
+          <h1 className="shelf-title">PDF SHELF 2</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
@@ -763,7 +783,6 @@ export default function App() {
         {pdfDoc && (
           <CustomPdfReader
             pdfDoc={pdfDoc}
-            dimensions={dimensions}
             onClose={() => setSelectedBook(null)}
             isTwoPage={isTwoPage}
             setIsTwoPage={setIsTwoPage}
