@@ -4,7 +4,6 @@ import { signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, getDocs, query, orderBy, where, doc, runTransaction, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { Book as BookIcon, Plus, ChevronLeft, ChevronRight, Maximize2, X, ArrowRight, Upload, Trash2, Zap, Cloud } from 'lucide-react';
-import HTMLFlipBook from 'react-pageflip';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -17,48 +16,178 @@ const AUTHORIZED_EMAILS = [
 const fileCache = new Map();
 const localFileMap = new Map();
 
-const Page = React.forwardRef(({ pdfDoc, number, pageHeight, currentPage }, ref) => {
+// 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트
+function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   const canvasRef = useRef(null);
-  const [rendered, setRendered] = useState(false);
-
-  // 현재 페이지 기준 +/- 10페이지를 미리 렌더링하여 페이지를 넘길 때 스피너가 전혀 뜨지 않도록 최적화 (Pre-rendering)
-  const isVisible = Math.abs(currentPage - (number - 1)) <= 10;
 
   useEffect(() => {
     let alive = true;
-    if (!pdfDoc || !isVisible) return; // rendered 조건 제거하여 리사이즈 시 배경에서 조용히 고해상도 업데이트
-    
+    if (!pdfDoc || !pageNum || pageNum < 1 || pageNum > pdfDoc.numPages) return;
+
     (async () => {
       try {
-        const page = await pdfDoc.getPage(number);
+        const page = await pdfDoc.getPage(pageNum);
         const unscaledVp = page.getViewport({ scale: 1.0 });
-        
-        // 화면 높이에 맞춰 2배 고해상도로 선명하게 렌더링
-        const targetScale = pageHeight ? (pageHeight / unscaledVp.height) * 2.0 : 2.0;
+        const targetScale = height ? (height / unscaledVp.height) * 2.0 : 2.0;
         const vp = page.getViewport({ scale: targetScale });
-        
+
         const canvas = canvasRef.current;
         if (!canvas || !alive) return;
-        canvas.height = vp.height; 
+        canvas.height = vp.height;
         canvas.width = vp.width;
         await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-        if (alive) setRendered(true);
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error("Canvas render error:", e);
+      }
     })();
+
     return () => { alive = false; };
-  }, [pdfDoc, number, pageHeight, isVisible, rendered]);
+  }, [pdfDoc, pageNum, height]);
+
+  if (!pageNum || pageNum < 1 || pageNum > pdfDoc?.numPages) {
+    return <div style={{ width, height, background: 'transparent' }} />;
+  }
+
+  // 실감나는 책 그림자 및 입체감 표현
+  let boxShadow = '0 6px 20px rgba(0,0,0,0.08)';
+  if (shadowType === 'cover') {
+    boxShadow = '0 12px 35px rgba(0,0,0,0.18)';
+  } else if (shadowType === 'left') {
+    boxShadow = '-6px 6px 18px rgba(0,0,0,0.06), inset -10px 0 15px -8px rgba(0,0,0,0.15)';
+  } else if (shadowType === 'right') {
+    boxShadow = '6px 6px 18px rgba(0,0,0,0.06), inset 10px 0 15px -8px rgba(0,0,0,0.15)';
+  }
 
   return (
-    <div ref={ref} style={{ background: '#fff', width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
+    <div style={{
+      width, height, background: '#ffffff', position: 'relative',
+      overflow: 'hidden', boxShadow, transition: 'all 0.2s ease',
+      borderRadius: shadowType === 'cover' ? '4px 12px 12px 4px' : (shadowType === 'left' ? '4px 0 0 4px' : '0 4px 4px 0')
+    }}>
       <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-      {!rendered && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#faf9f6' }}>
-          <div className="page-spinner" />
-        </div>
-      )}
     </div>
   );
-});
+}
+
+// 100% 정중앙, 0초 로딩, 잔선/오류 없는 커스텀 전자책 뷰어 엔진
+function CustomPdfReader({ pdfDoc, dimensions, onClose }) {
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState('');
+  const numPages = pdfDoc.numPages;
+
+  const isPortrait = window.innerWidth < window.innerHeight;
+  const isCover = currentPage === 1;
+
+  const turnNext = () => {
+    if (isPortrait || isCover) {
+      if (currentPage < numPages) setCurrentPage(prev => prev + 1);
+    } else {
+      if (currentPage === 1) setCurrentPage(2);
+      else if (currentPage + 2 <= numPages) setCurrentPage(prev => prev + 2);
+      else if (currentPage + 1 <= numPages) setCurrentPage(prev => prev + 1);
+    }
+  };
+
+  const turnPrev = () => {
+    if (isPortrait) {
+      if (currentPage > 1) setCurrentPage(prev => prev - 1);
+    } else {
+      if (currentPage <= 3) setCurrentPage(1);
+      else setCurrentPage(prev => prev - 2);
+    }
+  };
+
+  const jumpTo = (p) => {
+    const target = parseInt(p);
+    if (target >= 1 && target <= numPages) {
+      if (!isPortrait && target > 1 && target % 2 === 1) {
+        setCurrentPage(target - 1);
+      } else {
+        setCurrentPage(target);
+      }
+      setPageInput('');
+    } else {
+      alert(`1 ~ ${numPages} 사이의 페이지를 입력하세요.`);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'ArrowRight' || e.key === 'Space') { turnNext(); }
+      if (e.key === 'ArrowLeft') { turnPrev(); }
+      if (e.key === 'Escape') { onClose(); }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentPage, isPortrait, numPages]);
+
+  return (
+    <div className="reader-screen">
+      <button className="reader-close" onClick={onClose}><X size={18} /></button>
+
+      {/* 화면 좌우 영역 클릭으로 빠르게 페이지 넘기기 */}
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
+        <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnPrev} title="이전 페이지 (←)" />
+        <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnNext} title="다음 페이지 (→)" />
+      </div>
+
+      {/* PDF 뷰어 메인 공간 (100% 정중앙 플렉스 레이아웃) */}
+      <div style={{ zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {isPortrait || isCover ? (
+          // 표지(1페이지) 또는 세로모드: 단일 정중앙 뷰
+          <PdfCanvasPage
+            pdfDoc={pdfDoc}
+            pageNum={currentPage}
+            width={dimensions.width}
+            height={dimensions.height}
+            shadowType="cover"
+          />
+        ) : (
+          // 가로모드: 2페이지 양면 펼침 뷰 (책 중앙 책등 입체감 표현)
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <PdfCanvasPage
+              pdfDoc={pdfDoc}
+              pageNum={currentPage}
+              width={dimensions.width}
+              height={dimensions.height}
+              shadowType="left"
+            />
+            <PdfCanvasPage
+              pdfDoc={pdfDoc}
+              pageNum={currentPage + 1 <= numPages ? currentPage + 1 : null}
+              width={dimensions.width}
+              height={dimensions.height}
+              shadowType="right"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* 하단 툴바 */}
+      <div className="reader-toolbar" style={{ zIndex: 30 }}>
+        <button className="tb-btn" onClick={turnPrev}><ChevronLeft size={20} /></button>
+        <div className="tb-divider" />
+        <div className="tb-page-jump">
+          <input
+            type="text" value={pageInput}
+            onChange={e => setPageInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && jumpTo(pageInput)}
+            placeholder={isPortrait || isCover ? `${currentPage}` : `${currentPage}-${Math.min(currentPage + 1, numPages)}`}
+            className="tb-input"
+          />
+          <button className="tb-jump-btn" onClick={() => jumpTo(pageInput)}><ArrowRight size={14} /></button>
+          <span className="tb-total">/ {numPages}</span>
+        </div>
+        <div className="tb-divider" />
+        <button className="tb-btn" onClick={() => !document.fullscreenElement ? document.documentElement.requestFullscreen() : document.exitFullscreen()}>
+          <Maximize2 size={18} />
+        </button>
+        <div className="tb-divider" />
+        <button className="tb-btn" onClick={turnNext}><ChevronRight size={20} /></button>
+      </div>
+    </div>
+  );
+}
 
 function LoadingOverlay({ progress }) {
   return (
@@ -93,18 +222,11 @@ export default function App() {
   const [isOpening, setIsOpening] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('0%');
   const [globalUsage, setGlobalUsage] = useState(0);
-  const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
-  const [currentPage, setCurrentPage] = useState(0);
-  
-  // 사용자가 선택한 파일에 대한 업로드/로컬 저장 팝업 관리
   const [pendingFile, setPendingFile] = useState(null);
-  
-  // 화면 짤림 방지 및 최대 넓이 채우기 알고리즘 규격
   const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
 
   const dragCounter = useRef(0);
-  const bookRef = useRef(null);
   const fileInputRef = useRef(null);
   const LIMIT = 5 * 1024 * 1024 * 1024; // 5.00 GB
 
@@ -151,50 +273,44 @@ export default function App() {
       setBooks(fetchedBooks);
     } catch (err) {
       console.error("fetchBooks error:", err);
-      alert("도서 목록 로드 실패 / Failed to load book list: " + err.message);
+      alert("도서 목록 로드 실패: " + err.message);
     }
   };
 
-  // 세로 맞춤과 가로 맞춤 중 최대 면적(Area)을 사용하는 완벽 중앙 정렬 규격 자동 계산
   const updateDimensions = (pdf) => {
     if (!pdf) return;
     pdf.getPage(1).then(page => {
       const vp = page.getViewport({ scale: 1.0 });
-      const aspect = vp.width / vp.height; // 단일 페이지 비율
+      const aspect = vp.width / vp.height;
 
       const isFull = !!document.fullscreenElement;
-      // UI 도구 모음(툴바, 닫기 버튼)을 피하기 위한 여백 최적화
-      const topSpace = isFull ? 0 : 54; 
-      const bottomSpace = isFull ? 0 : 64; 
+      const topSpace = isFull ? 0 : 54;
+      const bottomSpace = isFull ? 0 : 64;
       
-      const maxH = Math.max(300, window.innerHeight - topSpace - bottomSpace); 
-      const maxW = Math.max(300, window.innerWidth - (isFull ? 0 : 16));  
+      const maxH = Math.max(300, window.innerHeight - topSpace - bottomSpace);
+      const maxW = Math.max(300, window.innerWidth - (isFull ? 0 : 16));
 
       const isPortrait = window.innerWidth < window.innerHeight;
 
       let finalW, finalH;
 
       if (isPortrait) {
-        // 모바일/태블릿 세로 모드: 단일 페이지 화면 꽉 채우기
         let pageH_A = maxH;
         let pageW_A = pageH_A * aspect;
         let validA = (pageW_A <= maxW);
 
         let pageW_B = maxW;
         let pageH_B = pageW_B / aspect;
-        let validB = (pageH_B <= maxH);
 
         if (validA) { finalW = pageW_A; finalH = pageH_A; }
         else { finalW = pageW_B; finalH = pageH_B; }
       } else {
-        // PC 가로 모드: 2페이지 펼침 화면 최대화
         let pageH_A = maxH;
         let pageW_A = pageH_A * aspect;
         let validA = (pageW_A * 2 <= maxW);
 
         let pageW_B = maxW / 2;
         let pageH_B = pageW_B / aspect;
-        let validB = (pageH_B <= maxH);
 
         if (validA) { finalW = pageW_A; finalH = pageH_A; }
         else { finalW = pageW_B; finalH = pageH_B; }
@@ -236,9 +352,8 @@ export default function App() {
         });
         loadingTask.promise.then(pdf => {
           setPdfDoc(pdf);
-          setCurrentPage(0);
           updateDimensions(pdf);
-          setTimeout(() => setIsOpening(false), 100);
+          setTimeout(() => setIsOpening(false), 50);
         }).catch(err => {
           console.error("Local PDF ArrayBuffer error:", err);
           alert("로컬 PDF 로드 실패: " + err.message);
@@ -277,79 +392,58 @@ export default function App() {
 
     loadingTask.promise.then(pdf => { 
       setPdfDoc(pdf); 
-      setCurrentPage(0); // 책 열 때 첫 페이지로 초기화
       updateDimensions(pdf);
-      setTimeout(() => setIsOpening(false), 200); 
+      setTimeout(() => setIsOpening(false), 100); 
     })
     .catch(err => {
       console.error("PDF 로드 에러:", err);
-      alert("PDF 로드 실패 / Failed to load PDF: " + err.message);
+      alert("PDF 로드 실패: " + err.message);
       setIsOpening(false);
       setSelectedBook(null);
     });
   }, [selectedBook]);
 
-  const handleJump = () => {
-    const p = parseInt(pageInput);
-    if (p > 0 && p <= pdfDoc?.numPages) {
-      bookRef.current.pageFlip().turnToPage(p - 1);
-      setPageInput('');
-    } else {
-      alert(`1 ~ ${pdfDoc?.numPages} 사이를 입력하세요 / Enter between 1 and ${pdfDoc?.numPages}`);
-    }
-  };
-
   const handleDragEnter = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     dragCounter.current += 1;
-    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-      setDragOver(true);
-    }
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) setDragOver(true);
   };
 
   const handleDragLeave = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     dragCounter.current -= 1;
-    if (dragCounter.current === 0) {
-      setDragOver(false);
-    }
+    if (dragCounter.current === 0) setDragOver(false);
   };
 
   const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-    dragCounter.current = 0;
+    e.preventDefault(); e.stopPropagation();
+    setDragOver(false); dragCounter.current = 0;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       onFileSelected(e.dataTransfer.files[0]);
     }
   };
 
-  // 파일이 선택되거나 드롭되었을 때 팝업을 띄워 사용자에게 선택 권한 제공
   const onFileSelected = (file) => {
     if (!file) return;
     if (!file.name.endsWith('.pdf')) {
-      alert('PDF 파일만 등록 가능합니다. / Only PDF files can be loaded.');
+      alert('PDF 파일만 등록 가능합니다.');
       return;
     }
     const MAX_SIZE = 500 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      alert('파일 크기가 500MB를 초과합니다. / File size exceeds 500MB.');
+      alert('파일 크기가 500MB를 초과합니다.');
       return;
     }
     localFileMap.set(`${file.name}_${file.size}`, file);
     setPendingFile(file);
   };
 
-  // 1. ⚡ 즉시 열기 (0.1초 로컬 모드)
   const handleQuickOpen = (file) => {
     const targetFile = file || pendingFile;
     if (!targetFile) return;
 
     if (!isCloudUser && localBooks.length >= 5) {
-      alert('무료 회원은 최대 5권까지만 추가할 수 있습니다. / Free members can only add up to 5 books.');
+      alert('무료 회원은 최대 5권까지만 추가할 수 있습니다.');
       setPendingFile(null);
       return;
     }
@@ -369,21 +463,18 @@ export default function App() {
     }
 
     setPendingFile(null);
-    setSelectedBook(newBook); // 팝업 닫고 즉시 뷰어로 열기!
+    setSelectedBook(newBook);
   };
 
-  // 2. ☁️ 클라우드에 서버 저장
   const handleCloudSave = async (file) => {
     const targetFile = file || pendingFile;
     if (!targetFile || !user) return;
     setPendingFile(null);
 
-    // 업로드 즉시 로컬 메모리에 캐싱하여 다운로드 대기 시간 0초 달성
     const cacheKey = `${targetFile.name}_${targetFile.size}`;
     fileCache.set(cacheKey, URL.createObjectURL(targetFile));
 
-    setUploading(true); 
-    setProgress(0);
+    setUploading(true); setProgress(0);
     const sRef = ref(storage, `pdfs/${user.uid}/${Date.now()}_${targetFile.name}`);
     const task = uploadBytesResumable(sRef, targetFile);
     
@@ -424,23 +515,20 @@ export default function App() {
     e.stopPropagation();
     
     const confirmMsg = isCloudUser && !book.isLocal
-      ? '이 책을 서버에서 완전히 삭제하시겠습니까? / Are you sure you want to permanently delete this book from the server?' 
-      : '선반에서 이 책을 빼시겠습니까? / Are you sure you want to remove this book from the shelf?';
+      ? '이 책을 서버에서 완전히 삭제하시겠습니까?' 
+      : '선반에서 이 책을 빼시겠습니까?';
       
     if (!confirm(confirmMsg)) return;
 
     if (!isCloudUser || book.isLocal) {
       URL.revokeObjectURL(book.url);
       setLocalBooks(prev => prev.filter(b => b.id !== book.id));
-      if (selectedBook?.id === book.id) {
-        setSelectedBook(null);
-      }
+      if (selectedBook?.id === book.id) setSelectedBook(null);
       return;
     }
 
     try {
       await deleteDoc(doc(db, 'books', book.id));
-      
       const fileRef = ref(storage, book.url);
       await deleteObject(fileRef).catch(err => console.error("Storage delete fail:", err));
 
@@ -454,28 +542,14 @@ export default function App() {
       });
 
       fetchBooks(user.uid);
-      if (selectedBook?.id === book.id) {
-        setSelectedBook(null);
-      }
+      if (selectedBook?.id === book.id) setSelectedBook(null);
     } catch (e) {
       console.error(e);
-      alert('삭제 실패 / Deletion failed: ' + e.message);
+      alert('삭제 실패: ' + e.message);
     }
   };
 
   const displayBooks = isCloudUser ? books : localBooks;
-
-  // 창 크기 조절 시 플립북 사이즈 자동 업데이트 (재마운트 방지)
-  useEffect(() => {
-    if (bookRef.current && bookRef.current.pageFlip()) {
-      try { bookRef.current.pageFlip().update(); } catch(e) {}
-    }
-  }, [dimensions]);
-
-  // 가로 모드에서 첫 페이지(표지)일 때 플립북 전체를 좌측으로 이동시켜 화면 정중앙에 위치시키는 트릭 계산
-  const isLandscape = dimensions.width * 2 <= window.innerWidth;
-  const isCover = currentPage === 0;
-  const shiftLeft = (isCover && isLandscape) ? `-${dimensions.width / 2}px` : '0px';
 
   if (!user) return (
     <>
@@ -522,7 +596,7 @@ export default function App() {
           <div className="drop-zone" onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDrop={handleDrop}>
             <Upload size={56} strokeWidth={1.5} />
             <p>DROP PDF ANYWHERE</p>
-            <span>페이지 어디든 파일만 올려두면 바로 등록됩니다 / Drop file anywhere</span>
+            <span>페이지 어디든 파일만 올려두면 바로 등록됩니다</span>
           </div>
         )}
         
@@ -541,7 +615,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* 선택 옵션 팝업 모달 */}
         {pendingFile && (
           <div className="modal-overlay">
             <div className="choice-card">
@@ -582,23 +655,22 @@ export default function App() {
           </div>
         )}
 
-        {/* Bilingual Info Card */}
         <div className="info-card">
           <div className="info-section">
             <div className="info-block">
               <h2>서비스 이용 안내</h2>
-              <p>본 서비스는 학습용 PDF 파일을 플립북 형태로 감상하는 개인 서재 웹 프로그램입니다.</p>
+              <p>본 서비스는 학습용 PDF 파일을 디지털 서재 형태로 감상하는 프로그램입니다.</p>
               <p>구글 로그인 후 본인 소유의 PDF 문서를 업로드하여 자유롭게 읽으실 수 있습니다.</p>
-              <p><strong>무료 회원 (로컬 리더)</strong>: 올린 파일은 서버에 저장되지 않고 브라우저에 임시로 로딩되어 즉시 동작합니다. 파일당 500MB 이하, 최대 5권까지 동시에 책장에 띄울 수 있습니다.</p>
-              <p><strong>유료 회원 (클라우드 서재)</strong>: 올린 책이 Firebase 클라우드 공간에 영구 저장되어, 언제 어디서든 로그인만 하면 서재를 동기화하여 읽을 수 있습니다.</p>
+              <p><strong>무료 회원 (로컬 리더)</strong>: 올린 파일은 브라우저 메모리에 즉시 로딩되어 0.05초 만에 열립니다.</p>
+              <p><strong>유료 회원 (클라우드 서재)</strong>: 올린 책이 Firebase 클라우드 공간에 영구 저장되어 연동됩니다.</p>
             </div>
             <div className="info-divider" />
             <div className="info-block">
               <h2>Service Information</h2>
-              <p>This service is a private library web app for reading study PDF files in a flipbook format.</p>
+              <p>This service is a private library web app for reading study PDF files.</p>
               <p>After logging in with Google, you can upload and read your own PDF documents.</p>
-              <p><strong>Free Member (Local Reader)</strong>: Uploaded files are not saved on the server but temporarily loaded in the browser. Max 500MB per file, up to 5 concurrent books on the shelf.</p>
-              <p><strong>Paid Member (Cloud Library)</strong>: Uploaded books are permanently stored in the Firebase cloud space, synchronized across all devices when you log in.</p>
+              <p><strong>Free Member (Local Reader)</strong>: Uploaded files are temporarily loaded in browser memory instantly.</p>
+              <p><strong>Paid Member (Cloud Library)</strong>: Uploaded books are permanently stored in Firebase cloud space.</p>
             </div>
           </div>
           <div className="membership-status">
@@ -612,26 +684,15 @@ export default function App() {
           </div>
         </div>
 
-        {/* Shared Storage Usage Stats */}
         <div className="usage-wrap">
           <div className="usage-left">
-            <span className="usage-title">
-              프로젝트 공유 저장소 사용량 / Shared Project Storage Usage
-            </span>
+            <span className="usage-title">프로젝트 공유 저장소 사용량 / Shared Project Storage Usage</span>
             <div className="usage-bar-track">
-              <div 
-                className="usage-bar-fill" 
-                style={{ 
-                  width: `${Math.min(100, (globalUsage / LIMIT) * 100)}%`,
-                  background: globalUsage > LIMIT * 0.9 ? '#cc7452' : '#2b5c4f'
-                }} 
-              />
+              <div className="usage-bar-fill" style={{ width: `${Math.min(100, (globalUsage / LIMIT) * 100)}%`, background: globalUsage > LIMIT * 0.9 ? '#cc7452' : '#2b5c4f' }} />
             </div>
           </div>
           <div className="usage-right">
-            <span className="usage-value">
-              {(globalUsage / 1024 / 1024 / 1024).toFixed(2)} / 5.00 GB
-            </span>
+            <span className="usage-value">{(globalUsage / 1024 / 1024 / 1024).toFixed(2)} / 5.00 GB</span>
           </div>
         </div>
 
@@ -643,7 +704,7 @@ export default function App() {
                 <div className="upload-progress-fill" style={{ width: `${progress}%` }} />
               </div>
               <span className="upload-percentage">{progress}%</span>
-              <p>서버에 파일을 안전하게 전송하는 중입니다 / Sending file to server</p>
+              <p>서버에 파일을 안전하게 전송하는 중입니다</p>
             </div>
           </div>
         )}
@@ -683,67 +744,12 @@ export default function App() {
       <style>{css}</style>
       <div className="reader-screen">
         {isOpening && <LoadingOverlay progress={downloadProgress} />}
-        <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
-          <>
-            {/* 표지(첫 페이지)일 경우 CSS Transform을 이용해 화면 정중앙으로 완벽하게 이동시키는 트릭 적용 */}
-            <div className="flipbook-wrap" style={{ overflow: 'hidden' }}>
-              <div 
-                style={{ 
-                  transform: `translateX(${shiftLeft})`, 
-                  transition: 'transform 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
-                  display: 'flex', justifyContent: 'center'
-                }}
-              >
-                <HTMLFlipBook
-                  width={dimensions.width}
-                  height={dimensions.height}
-                  size="fixed"
-                  minWidth={200} maxWidth={3200}
-                  minHeight={300} maxHeight={4000}
-                  showCover={true}
-                  usePortrait={true}
-                  onFlip={(e) => setCurrentPage(e.data)}
-                  maxShadowOpacity={0.35}
-                  mobileScrollSupport={true}
-                  ref={bookRef}>
-                  {[...Array(pdfDoc.numPages)].map((_, i) => (
-                    <Page 
-                      key={i} 
-                      number={i + 1} 
-                      pdfDoc={pdfDoc} 
-                      pageHeight={dimensions.height}
-                      currentPage={currentPage} 
-                    />
-                  ))}
-                </HTMLFlipBook>
-              </div>
-            </div>
-            <div className="reader-toolbar">
-              <button className="tb-btn" onClick={() => bookRef.current.pageFlip().flipPrev()}>
-                <ChevronLeft size={20} />
-              </button>
-              <div className="tb-divider" />
-              <div className="tb-page-jump">
-                <input
-                  type="text" value={pageInput}
-                  onChange={e => setPageInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleJump()}
-                  placeholder="pg" className="tb-input"
-                />
-                <button className="tb-jump-btn" onClick={handleJump}><ArrowRight size={14} /></button>
-                <span className="tb-total">/ {pdfDoc.numPages}</span>
-              </div>
-              <div className="tb-divider" />
-              <button className="tb-btn" onClick={() => !document.fullscreenElement ? document.documentElement.requestFullscreen() : document.exitFullscreen()}>
-                <Maximize2 size={18} />
-              </button>
-              <div className="tb-divider" />
-              <button className="tb-btn" onClick={() => bookRef.current.pageFlip().flipNext()}>
-                <ChevronRight size={20} />
-              </button>
-            </div>
-          </>
+          <CustomPdfReader
+            pdfDoc={pdfDoc}
+            dimensions={dimensions}
+            onClose={() => setSelectedBook(null)}
+          />
         )}
       </div>
     </>
@@ -874,18 +880,12 @@ const css = `
     background: #ffffff; border: 1px solid #e8e5df; border-radius: 20px;
     padding: 32px; margin-bottom: 40px; box-shadow: 0 4px 20px rgba(27,32,46,.02);
   }
-  .info-section {
-    display: flex; gap: 32px; margin-bottom: 24px;
-  }
-  .info-block {
-    flex: 1; text-align: left;
-  }
+  .info-section { display: flex; gap: 32px; margin-bottom: 24px; }
+  .info-block { flex: 1; text-align: left; }
   .info-block h2 { font-family: 'Playfair Display', serif; font-size: 20px; font-weight: 700; color: #1b202e; margin-bottom: 12px; }
   .info-block p { font-size: 13px; color: #6b7080; line-height: 1.6; margin-bottom: 8px; }
   .info-block strong { color: #1b202e; }
-  .info-divider {
-    width: 1px; background: #e8e5df; align-self: stretch;
-  }
+  .info-divider { width: 1px; background: #e8e5df; align-self: stretch; }
   .membership-status {
     display: flex; justify-content: space-between; align-items: center;
     background: #f7f4eb; border-radius: 14px; padding: 18px 24px; border: 1px solid #e8e5df;
@@ -993,21 +993,9 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* 투명한 빈 페이지 및 선/그림자 완전 제거 (우측 쏠림 및 미세한 선 방지) */
-  .stf__wrapper, .stf__block, .stf__page, .stf__outer, .stf__item { 
-    background: transparent !important; 
-    box-shadow: none !important;
-    border: none !important;
-    outline: none !important;
-  }
-  .stf__shadow, .stf__shadow-top, .stf__shadow-bottom, .stf__shadow-left, .stf__shadow-right {
-    display: none !important;
-    opacity: 0 !important;
-  }
-
-  /* Reader Screen - 배경색을 #ffffff로 통일하여 완벽하게 선이 없고 깔끔한 정중앙 라이브러리 환경 구축 */
+  /* Reader Screen - 100% 정중앙 완벽 중앙 정렬 배치 */
   .reader-screen {
-    height: 100dvh; width: 100vw; background: #ffffff;
+    height: 100dvh; width: 100vw; background: #f4f3ef;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     position: relative; font-family: 'Outfit', sans-serif;
@@ -1023,13 +1011,6 @@ const css = `
     backdrop-filter: blur(8px);
   }
   .reader-close:hover { background: #f7f4eb; color: #cc7452; border-color: #cc7452; }
-
-  .flipbook-wrap {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    width: 100vw; height: 100dvh;
-    overflow: hidden;
-  }
 
   /* Loading overlay */
   .loading-overlay {
@@ -1062,7 +1043,7 @@ const css = `
   .reader-toolbar {
     position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
     z-index: 200; display: flex; align-items: center; gap: 6px;
-    background: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.92);
     backdrop-filter: blur(12px);
     border: 1px solid rgba(232, 229, 223, 0.8); border-radius: 20px;
     padding: 4px 12px; height: 48px;
@@ -1078,13 +1059,13 @@ const css = `
   .tb-divider { width: 1px; height: 22px; background: #e8e5df; margin: 0 4px; }
   .tb-page-jump { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
   .tb-input {
-    width: 48px; height: 34px; background: #faf9f6;
+    width: 64px; height: 34px; background: #faf9f6;
     border: 1px solid #e8e5df; border-radius: 8px;
     text-align: center; color: #2b5c4f; font-family: 'DM Mono', monospace;
-    font-size: 13px; font-weight: 700; outline: none; transition: all .2s;
+    font-size: 12px; font-weight: 700; outline: none; transition: all .2s;
   }
   .tb-input:focus { border-color: #2b5c4f; background: #ffffff; }
-  .tb-input::placeholder { color: #cbd5e1; }
+  .tb-input::placeholder { color: #6b7080; }
   .tb-jump-btn {
     width: 30px; height: 30px; border-radius: 8px; background: #2b5c4f; border: none; color: #ffffff;
     display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .15s;
@@ -1092,8 +1073,4 @@ const css = `
   .tb-jump-btn:hover { background: #347060; }
   .tb-jump-btn:active { transform: scale(.9); }
   .tb-total { font-family: 'DM Mono', monospace; font-size: 10px; color: #6b7080; white-space: nowrap; font-weight: 700; }
-  .page-spinner {
-    width: 24px; height: 24px; border: 2px solid rgba(0,0,0,.05);
-    border-top-color: #2b5c4f; border-radius: 50%; animation: spin .8s linear infinite;
-  }
 `;
