@@ -992,9 +992,9 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* Reader Screen - 100% 정중앙 깔끔한 뷰어 배경 */
+  /* Reader Screen - 100% 정중앙 완벽 중앙 정렬 배치 */
   .reader-screen {
-    height: 100dvh; width: 100vw; background: #eaeaeb;
+    height: 100dvh; width: 100vw; background: #faf9f6;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     position: relative; font-family: 'Outfit', sans-serif;
