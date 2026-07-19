@@ -21,8 +21,8 @@ const Page = React.forwardRef(({ pdfDoc, number, pageHeight, currentPage }, ref)
   const canvasRef = useRef(null);
   const [rendered, setRendered] = useState(false);
 
-  // 렌더링 폭주로 인한 메모리 초과(Error 5)를 막기 위해 현재 페이지 기준 +/- 2페이지만 렌더링 (Lazy Loading)
-  const isVisible = Math.abs(currentPage - (number - 1)) <= 2;
+  // 현재 페이지 기준 +/- 10페이지를 미리 렌더링하여 페이지를 넘길 때 스피너가 전혀 뜨지 않도록 최적화 (Pre-rendering)
+  const isVisible = Math.abs(currentPage - (number - 1)) <= 10;
 
   useEffect(() => {
     let alive = true;
@@ -1005,9 +1005,9 @@ const css = `
     opacity: 0 !important;
   }
 
-  /* Reader Screen - 100% 정중앙 완벽 중앙 정렬 배치 */
+  /* Reader Screen - 배경색을 #ffffff로 통일하여 완벽하게 선이 없고 깔끔한 정중앙 라이브러리 환경 구축 */
   .reader-screen {
-    height: 100dvh; width: 100vw; background: #faf9f6;
+    height: 100dvh; width: 100vw; background: #ffffff;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     position: relative; font-family: 'Outfit', sans-serif;
