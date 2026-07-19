@@ -15,6 +15,7 @@ const AUTHORIZED_EMAILS = [
 
 const fileCache = new Map();
 const localFileMap = new Map();
+const CACHE_NAME = 'pdf-shelf-persistent-v1';
 
 // 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트 (100% 정밀 핏 & 하단 여백 완벽 제거)
 function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
@@ -79,7 +80,7 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (휠 스크롤 동적 돋보기 & WASD 올바른 매핑)
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -105,10 +106,8 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     const handleWheel = (e) => {
       e.preventDefault();
       if (e.deltaY < 0) {
-        // 휠 올림 -> 돋보기 렌즈 확대
         setMagnifierScale(prev => Math.min(prev + 0.1, 1.8));
       } else if (e.deltaY > 0) {
-        // 휠 내림 -> 돋보기 렌즈 축소
         setMagnifierScale(prev => Math.max(prev - 0.1, 0.6));
       }
     };
@@ -209,7 +208,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     }
   };
 
-  // 돋보기 실시간 2.6배 고화질 크롭 렌더링 (동적 렌즈 규격 지원)
+  // 돋보기 실시간 2.6배 고화질 크롭 렌더링
   useEffect(() => {
     if (!isMagnifierActive || !isOverPage) return;
     const lensCanvas = lensCanvasRef.current;
@@ -276,15 +275,13 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     }
   };
 
-  // 키보드 조작: 방향키 + W(다음 페이지), S(이전 페이지) 올바른 매핑!
+  // 키보드 조작: W(다음), S(이전)
   useEffect(() => {
     const handleKeyDown = (e) => {
       const k = e.key.toLowerCase();
-      // W / D / ArrowRight / Space / PageDown -> 다음 페이지
       if (k === 'w' || k === 'd' || k === 'arrowright' || k === 'space' || k === 'pagedown') { 
         turnNext(); 
       }
-      // S / A / ArrowLeft / PageUp -> 이전 페이지
       if (k === 's' || k === 'a' || k === 'arrowleft' || k === 'pageup') { 
         turnPrev(); 
       }
@@ -457,6 +454,7 @@ export default function App() {
   const [isOpening, setIsOpening] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('0%');
   const [globalUsage, setGlobalUsage] = useState(0);
+  const [userUsageList, setUserUsageList] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [pendingFile, setPendingFile] = useState(null);
   const [isTwoPage, setIsTwoPage] = useState(true); // 기본값: 2페이지 양면(2P) 뷰어 모드
@@ -493,6 +491,44 @@ export default function App() {
     return () => { unsub1(); unsub2(); };
   }, []);
 
+  // 유저별 클라우드 용량 분이 점유 현황 멀티 컬러 트래킹
+  useEffect(() => {
+    if (!user || !isCloudUser) return;
+    const q = query(collection(db, 'books'));
+    const unsub = onSnapshot(q, snap => {
+      const map = {};
+      snap.docs.forEach(doc => {
+        const b = doc.data();
+        const uid = b.userId || 'unknown';
+        map[uid] = (map[uid] || 0) + (b.size || 0);
+      });
+
+      const colors = ['#2b5c4f', '#cc7452', '#7c3aed', '#d97706', '#2563eb', '#db2777'];
+      const list = Object.entries(map).map(([uid, bytes], index) => {
+        let name = '기타 유저';
+        if (uid === user.uid) {
+          name = `${user.displayName?.split(' ')[0]} (나)`;
+        } else if (uid.includes('skateboard') || uid === 'skateboard4335@gmail.com') {
+          name = 'skateboard4335@gmail.com';
+        } else if (uid.includes('jeki') || uid === 'jeki4332@gmail.com') {
+          name = 'jeki4332@gmail.com';
+        } else {
+          name = `User (${uid.slice(0, 6)}...)`;
+        }
+
+        return {
+          uid,
+          bytes,
+          name,
+          color: uid === user.uid ? '#2b5c4f' : colors[(index + 1) % colors.length]
+        };
+      });
+
+      setUserUsageList(list);
+    });
+    return () => unsub();
+  }, [user, isCloudUser]);
+
   const fetchBooks = async uid => {
     try {
       const q = query(collection(db, 'books'), where('userId', '==', uid));
@@ -506,13 +542,30 @@ export default function App() {
       });
       
       setBooks(fetchedBooks);
+
+      // 백그라운드 영구 캐싱 (Idle 사전 다운로드로 다음 클릭 시 0초 로딩)
+      if ('caches' in window) {
+        window.caches.open(CACHE_NAME).then(cache => {
+          fetchedBooks.forEach(b => {
+            if (b.url) {
+              cache.match(b.url).then(match => {
+                if (!match) {
+                  fetch(b.url).then(res => {
+                    if (res.ok) cache.put(b.url, res.clone());
+                  }).catch(() => {});
+                }
+              });
+            }
+          });
+        });
+      }
     } catch (err) {
       console.error("fetchBooks error:", err);
       alert("도서 목록 로드 실패: " + err.message);
     }
   };
 
-  // 초고속 PDF 오픈 (로컬/클라우드 캐싱 & 100% 대역폭 직렬 Fetch로 0초 로딩)
+  // 초고속 PDF 오픈 (영구 브라우저 디스크 캐시 Cache API & 100% 대역폭 0초 로딩)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
@@ -520,7 +573,7 @@ export default function App() {
 
     const cacheKey = `${selectedBook.id || selectedBook.title}_${selectedBook.size}`;
     
-    // 1. 메모리 캐시(fileCache)에 이미 저장된 책이면 0.00초 만에 즉시 오픈!
+    // 1. 메모리 캐시(fileCache)에 이미 들어있는 경우 즉시 오픈
     if (fileCache.has(cacheKey)) {
       const cachedBuf = fileCache.get(cacheKey);
       const loadingTask = pdfjsLib.getDocument({
@@ -539,7 +592,7 @@ export default function App() {
     const fileObj = selectedBook.file || localFileMap.get(`${selectedBook.title}_${selectedBook.size}`);
     if (fileObj) {
       fileObj.arrayBuffer().then(buf => {
-        fileCache.set(cacheKey, buf); // 메모리에 캐싱
+        fileCache.set(cacheKey, buf);
         const loadingTask = pdfjsLib.getDocument({
           data: new Uint8Array(buf),
           cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
@@ -553,11 +606,42 @@ export default function App() {
       return;
     }
 
-    // 3. 클라우드 URL인 경우: 브라우저 네이티브 fetch() Stream으로 와이파이 대역폭 100% 한번에 끌어오기
-    fetch(selectedBook.url)
+    // 3. 영구 Cache API (디스크 캐시)에서 사전 로딩된 데이터 확인 (0.00초 즉시 오픈)
+    if ('caches' in window && selectedBook.url) {
+      caches.open(CACHE_NAME).then(cache => {
+        cache.match(selectedBook.url).then(async match => {
+          if (match) {
+            const buf = await match.arrayBuffer();
+            fileCache.set(cacheKey, buf);
+            const loadingTask = pdfjsLib.getDocument({
+              data: new Uint8Array(buf),
+              cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
+              cMapPacked: true,
+            });
+            const pdf = await loadingTask.promise;
+            setPdfDoc(pdf);
+            setTimeout(() => setIsOpening(false), 30);
+          } else {
+            // 디스크 캐시에 없으면 초고속 스트림 Fetch로 전속력 다운로드 후 캐싱
+            fetchCloudPdf(selectedBook, cacheKey, cache);
+          }
+        }).catch(() => fetchCloudPdf(selectedBook, cacheKey, null));
+      }).catch(() => fetchCloudPdf(selectedBook, cacheKey, null));
+      return;
+    }
+
+    fetchCloudPdf(selectedBook, cacheKey, null);
+  }, [selectedBook]);
+
+  // 클라우드 PDF 전속력 스트림 다운로드 함수
+  const fetchCloudPdf = (book, cacheKey, persistentCache) => {
+    fetch(book.url)
       .then(async response => {
+        if (persistentCache) {
+          persistentCache.put(book.url, response.clone());
+        }
         const contentLength = response.headers.get('content-length');
-        const total = contentLength ? parseInt(contentLength, 10) : selectedBook.size || 0;
+        const total = contentLength ? parseInt(contentLength, 10) : book.size || 0;
         const reader = response.body.getReader();
         let receivedLength = 0;
         let chunks = [];
@@ -583,7 +667,7 @@ export default function App() {
         }
 
         const buf = chunksAll.buffer;
-        fileCache.set(cacheKey, buf); // 첫 다운로드 후 메모리에 영구 저장하여 이후 클릭 시 0초 로딩
+        fileCache.set(cacheKey, buf);
 
         const loadingTask = pdfjsLib.getDocument({
           data: chunksAll,
@@ -600,7 +684,7 @@ export default function App() {
         setIsOpening(false);
         setSelectedBook(null);
       });
-  }, [selectedBook]);
+  };
 
   const handleDragEnter = (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -800,7 +884,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 6</h1>
+          <h1 className="shelf-title">PDF SHELF 7</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
@@ -883,11 +967,47 @@ export default function App() {
           </div>
         </div>
 
+        {/* 유저별 분이 용량 세그먼트 게이지 바 */}
         <div className="usage-wrap">
           <div className="usage-left">
-            <span className="usage-title">프로젝트 공유 저장소 사용량 / Shared Project Storage Usage</span>
-            <div className="usage-bar-track">
-              <div className="usage-bar-fill" style={{ width: `${Math.min(100, (globalUsage / LIMIT) * 100)}%`, background: globalUsage > LIMIT * 0.9 ? '#cc7452' : '#2b5c4f' }} />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <span className="usage-title">프로젝트 공유 저장소 사용량 (유저별 세그먼트)</span>
+            </div>
+            <div className="usage-bar-track" style={{ display: 'flex', position: 'relative', overflow: 'hidden', width: '340px' }}>
+              {userUsageList.map((item, idx) => {
+                const pct = (item.bytes / LIMIT) * 100;
+                const sizeMB = (item.bytes / 1024 / 1024).toFixed(1);
+                const sizeGB = (item.bytes / 1024 / 1024 / 1024).toFixed(2);
+                const displaySize = item.bytes > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
+                return (
+                  <div
+                    key={item.uid || idx}
+                    style={{
+                      width: `${pct}%`,
+                      height: '100%',
+                      background: item.color,
+                      transition: 'all 0.3s ease',
+                      cursor: 'pointer'
+                    }}
+                    title={`${item.name}: ${displaySize} (${pct.toFixed(1)}%)`}
+                  />
+                );
+              })}
+            </div>
+            {/* 유저별 툴팁 범례 (Mouse Hover) */}
+            <div style={{ display: 'flex', gap: '12px', marginTop: '8px', flexWrap: 'wrap' }}>
+              {userUsageList.map((item, idx) => {
+                const sizeMB = (item.bytes / 1024 / 1024).toFixed(1);
+                const sizeGB = (item.bytes / 1024 / 1024 / 1024).toFixed(2);
+                const displaySize = item.bytes > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
+                return (
+                  <div key={item.uid || idx} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#6b7080' }} title={`${item.name}: ${displaySize}`}>
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: item.color, display: 'inline-block' }} />
+                    <span style={{ fontWeight: 700, color: '#1b202e' }}>{item.name}</span>
+                    <span>({displaySize})</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div className="usage-right">
@@ -1107,8 +1227,7 @@ const css = `
   }
   .usage-left { text-align: left; }
   .usage-title { font-size: 12px; font-weight: 700; color: #6b7080; text-transform: uppercase; letter-spacing: 0.5px; }
-  .usage-bar-track { width: 300px; height: 6px; background: #e8e5df; border-radius: 99px; overflow: hidden; margin-top: 8px; }
-  .usage-bar-fill { height: 100%; border-radius: 99px; transition: width 1s ease; }
+  .usage-bar-track { height: 8px; background: #e8e5df; border-radius: 99px; overflow: hidden; margin-top: 8px; }
   .usage-right { text-align: right; }
   .usage-value { font-family: 'DM Mono', monospace; font-size: 14px; font-weight: 700; color: #1b202e; }
 
