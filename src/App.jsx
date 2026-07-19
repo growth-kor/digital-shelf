@@ -25,7 +25,7 @@ const Page = React.forwardRef(({ pdfDoc, number, pageHeight, currentPage }, ref)
 
   useEffect(() => {
     let alive = true;
-    if (!pdfDoc || !isVisible || rendered) return;
+    if (!pdfDoc || !isVisible) return; // rendered 조건 제거하여 리사이즈 시 배경에서 조용히 고해상도 업데이트
     
     (async () => {
       try {
@@ -169,19 +169,34 @@ export default function App() {
       const maxH = Math.max(300, window.innerHeight - topSpace - bottomSpace); 
       const maxW = Math.max(300, window.innerWidth - (isFull ? 0 : 16));  
 
-      // 네이버 시리즈처럼 항상 단일 페이지 뷰어로 꽉 채우기 (무조건 단일 페이지)
-      let finalW, finalH;
-      let pageH = maxH;
-      let pageW = pageH * aspect;
+      const isPortrait = window.innerWidth < window.innerHeight;
 
-      if (pageW <= maxW) {
-        // 높이에 맞춤
-        finalW = pageW;
-        finalH = pageH;
+      let finalW, finalH;
+
+      if (isPortrait) {
+        // 모바일/태블릿 세로 모드: 단일 페이지 화면 꽉 채우기
+        let pageH_A = maxH;
+        let pageW_A = pageH_A * aspect;
+        let validA = (pageW_A <= maxW);
+
+        let pageW_B = maxW;
+        let pageH_B = pageW_B / aspect;
+        let validB = (pageH_B <= maxH);
+
+        if (validA) { finalW = pageW_A; finalH = pageH_A; }
+        else { finalW = pageW_B; finalH = pageH_B; }
       } else {
-        // 너비에 맞춤
-        finalW = maxW;
-        finalH = maxW / aspect;
+        // PC 가로 모드: 2페이지 펼침 화면 최대화
+        let pageH_A = maxH;
+        let pageW_A = pageH_A * aspect;
+        let validA = (pageW_A * 2 <= maxW);
+
+        let pageW_B = maxW / 2;
+        let pageH_B = pageW_B / aspect;
+        let validB = (pageH_B <= maxH);
+
+        if (validA) { finalW = pageW_A; finalH = pageH_A; }
+        else { finalW = pageW_B; finalH = pageH_B; }
       }
 
       setDimensions({
@@ -420,6 +435,18 @@ export default function App() {
 
   const displayBooks = isCloudUser ? books : localBooks;
 
+  // 창 크기 조절 시 플립북 사이즈 자동 업데이트 (재마운트 방지)
+  useEffect(() => {
+    if (bookRef.current && bookRef.current.pageFlip()) {
+      try { bookRef.current.pageFlip().update(); } catch(e) {}
+    }
+  }, [dimensions]);
+
+  // 가로 모드에서 첫 페이지(표지)일 때 플립북 전체를 좌측으로 이동시켜 화면 정중앙에 위치시키는 트릭 계산
+  const isLandscape = dimensions.width * 2 <= window.innerWidth;
+  const isCover = currentPage === 0;
+  const shiftLeft = (isCover && isLandscape) ? `-${dimensions.width / 2}px` : '0px';
+
   if (!user) return (
     <>
       <style>{css}</style>
@@ -629,11 +656,16 @@ export default function App() {
         <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
           <>
-            {/* 컨테이너 너비를 정확히 1페이지 너비로 제한하여 무조건 단일 페이지(웹툰 뷰어 모드)로 동작하게 강제함 */}
-            <div className="flipbook-wrap">
-              <div style={{ width: dimensions.width, height: dimensions.height, display: 'flex', justifyContent: 'center' }}>
+            {/* 표지(첫 페이지)일 경우 CSS Transform을 이용해 화면 정중앙으로 완벽하게 이동시키는 트릭 적용 */}
+            <div className="flipbook-wrap" style={{ overflow: 'hidden' }}>
+              <div 
+                style={{ 
+                  transform: `translateX(${shiftLeft})`, 
+                  transition: 'transform 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
+                  display: 'flex', justifyContent: 'center'
+                }}
+              >
                 <HTMLFlipBook
-                  key={`${dimensions.width}-${dimensions.height}`}
                   width={dimensions.width}
                   height={dimensions.height}
                   size="fixed"
@@ -930,6 +962,9 @@ const css = `
   .upload-card p {
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
+
+  /* 투명한 빈 페이지 처리 (우측 쏠림 방지 트릭) */
+  .stf__wrapper, .stf__block, .stf__page { background: transparent !important; }
 
   /* Reader Screen - 100% 정중앙 완벽 중앙 정렬 배치 */
   .reader-screen {
