@@ -79,7 +79,7 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (단축키 M/Z 돋보기 & 하단 툴바 간섭 회피)
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -98,6 +98,9 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   // 동적 초대형 돋보기 크기 계산 (기본 380x220 -> 최대 1140x660까지 조절 가능!)
   const lensW = Math.round(380 * magnifierScale);
   const lensH = Math.round(220 * magnifierScale);
+
+  // 하단 툴바 근처(하단 80px)로 마우스 이동 시 돋보기 자동 회피(숨김)
+  const isNearToolbar = mousePos.y > window.innerHeight - 80;
 
   // 마우스 휠 조작으로 돋보기 렌즈 크기 실시간 조절
   useEffect(() => {
@@ -209,7 +212,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
 
   // 돋보기 실시간 2.6배 고화질 크롭 렌더링
   useEffect(() => {
-    if (!isMagnifierActive || !isOverPage) return;
+    if (!isMagnifierActive || !isOverPage || isNearToolbar) return;
     const lensCanvas = lensCanvasRef.current;
     if (!lensCanvas) return;
     const ctx = lensCanvas.getContext('2d');
@@ -240,7 +243,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
         }
       }
     });
-  }, [mousePos, isMagnifierActive, isOverPage, lensW, lensH]);
+  }, [mousePos, isMagnifierActive, isOverPage, isNearToolbar, lensW, lensH]);
 
   const turnNext = () => {
     if (!showTwoPage) {
@@ -274,28 +277,39 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     }
   };
 
-  // 키보드 조작: W(다음), S(이전)
+  // 키보드 조작: W(다음), S(이전), M/Z(돋보기 토글!)
   useEffect(() => {
     const handleKeyDown = (e) => {
       const k = e.key.toLowerCase();
+      // M 또는 Z 키를 누르면 돋보기 즉시 온/오프 토글!
+      if (k === 'm' || k === 'z') {
+        setIsMagnifierActive(prev => !prev);
+        return;
+      }
       if (k === 'w' || k === 'd' || k === 'arrowright' || k === 'space' || k === 'pagedown') { 
         turnNext(); 
       }
       if (k === 's' || k === 'a' || k === 'arrowleft' || k === 'pageup') { 
         turnPrev(); 
       }
-      if (e.key === 'Escape') { onClose(); }
+      if (e.key === 'Escape') { 
+        if (isMagnifierActive) {
+          setIsMagnifierActive(false);
+        } else {
+          onClose(); 
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPage, showTwoPage, numPages]);
+  }, [currentPage, showTwoPage, numPages, isMagnifierActive]);
 
   return (
     <div className="reader-screen" onMouseMove={handleMouseMove}>
       <button className="reader-close" onClick={onClose}><X size={18} /></button>
 
-      {/* PDF 페이지 영역 안에서만 나타나는 동적 조절 대형 돋보기 렌즈 */}
-      {isMagnifierActive && isOverPage && (
+      {/* PDF 페이지 영역 안에서만 나타나는 동적 조절 대형 돋보기 렌즈 (하단 툴바 근처 시 자동 회피) */}
+      {isMagnifierActive && isOverPage && !isNearToolbar && (
         <div
           style={{
             position: 'fixed',
@@ -319,12 +333,12 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
       {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 */}
       <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
         <div
-          style={{ flex: 1, cursor: isMagnifierActive && isOverPage ? 'none' : 'pointer' }}
+          style={{ flex: 1, cursor: isMagnifierActive && isOverPage && !isNearToolbar ? 'none' : 'pointer' }}
           onClick={turnPrev}
           title={isMagnifierActive ? '' : '이전 페이지 (S / A / ←)'}
         />
         <div
-          style={{ flex: 1, cursor: isMagnifierActive && isOverPage ? 'none' : 'pointer' }}
+          style={{ flex: 1, cursor: isMagnifierActive && isOverPage && !isNearToolbar ? 'none' : 'pointer' }}
           onClick={turnNext}
           title={isMagnifierActive ? '' : '다음 페이지 (W / D / →)'}
         />
@@ -366,7 +380,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
       <div 
         className="reader-toolbar" 
         style={{ 
-          zIndex: 30,
+          zIndex: 300,
           opacity: showToolbar ? 1 : 0,
           pointerEvents: showToolbar ? 'auto' : 'none',
           transform: showToolbar ? 'translate(-50%, 0)' : 'translate(-50%, 20px)',
@@ -397,11 +411,11 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           {isTwoPage ? '2P' : '1P'}
         </button>
         <div className="tb-divider" />
-        {/* 대형 동적 돋보기 온/오프 버튼 */}
+        {/* 대형 동적 돋보기 온/오프 버튼 (단축키 M / Z) */}
         <button
           className="tb-btn"
           onClick={() => setIsMagnifierActive(!isMagnifierActive)}
-          title={isMagnifierActive ? "돋보기 끄기" : "휠 스크롤 조절 돋보기 키기"}
+          title={isMagnifierActive ? "돋보기 끄기 (단축키 M)" : "휠 스크롤 조절 돋보기 키기 (단축키 M)"}
           style={{
             background: isMagnifierActive ? '#2b5c4f' : 'transparent',
             color: isMagnifierActive ? '#ffffff' : '#6b7080'
@@ -547,9 +561,9 @@ export default function App() {
     }
   };
 
-  // 8채널 다중 HTTP Range 병렬 다운로드 엔진 (최대 물리학 전속력 다운로드)
+  // 하드웨어 concurrency 기반 병렬 다운로드 엔진
   const fetchParallelChunks = async (url, totalSize, cacheKey) => {
-    const THREAD_COUNT = 8;
+    const THREAD_COUNT = Math.min(8, navigator.hardwareConcurrency || 4);
     const chunkSize = Math.ceil(totalSize / THREAD_COUNT);
     let loadedBytes = new Array(THREAD_COUNT).fill(0);
 
@@ -607,7 +621,7 @@ export default function App() {
     return finalBuffer.buffer;
   };
 
-  // 초고속 PDF 오픈 (8채널 병렬 다운로드 & 0초 메모리 Caching)
+  // 초고속 PDF 오픈 (0초 메모리 Caching)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
@@ -615,7 +629,6 @@ export default function App() {
 
     const cacheKey = `${selectedBook.id || selectedBook.title}_${selectedBook.size}`;
 
-    // 1. 메모리 캐시에 이미 들어있는 경우 0.00초 즉시 오픈
     if (fileCache.has(cacheKey)) {
       const cachedBuf = fileCache.get(cacheKey);
       const loadingTask = pdfjsLib.getDocument({
@@ -630,7 +643,6 @@ export default function App() {
       return;
     }
 
-    // 2. 로컬 파일인 경우
     const fileObj = selectedBook.file || localFileMap.get(`${selectedBook.title}_${selectedBook.size}`);
     if (fileObj) {
       fileObj.arrayBuffer().then(buf => {
@@ -648,7 +660,6 @@ export default function App() {
       return;
     }
 
-    // 3. 8채널 다중 HTTP Range 병렬 초고속 다운로드 시도
     if (selectedBook.size && selectedBook.size > 1024 * 1024) {
       fetchParallelChunks(selectedBook.url, selectedBook.size, cacheKey)
         .then(buf => {
@@ -665,7 +676,6 @@ export default function App() {
           setTimeout(() => setIsOpening(false), 30);
         })
         .catch(() => {
-          // Fallback to standard PDF.js loader if parallel fetch blocked by CORS
           loadPdfFromUrl(selectedBook.url, cacheKey);
         });
       return;
@@ -913,7 +923,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 9</h1>
+          <h1 className="shelf-title">PDF SHELF 10</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
@@ -1350,7 +1360,7 @@ const css = `
     overflow: hidden; padding: 0; margin: 0;
   }
   .reader-close {
-    position: fixed; top: 16px; left: 16px; z-index: 200;
+    position: fixed; top: 16px; left: 16px; z-index: 500;
     width: 38px; height: 38px; border-radius: 50%; border: 1px solid #e8e5df;
     background: rgba(255, 255, 255, 0.9);
     display: flex; align-items: center; justify-content: center;
@@ -1390,7 +1400,7 @@ const css = `
   /* Reader toolbar */
   .reader-toolbar {
     position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-    z-index: 200; display: flex; align-items: center; gap: 6px;
+    z-index: 500; display: flex; align-items: center; gap: 6px;
     background: rgba(255, 255, 255, 0.92);
     backdrop-filter: blur(12px);
     border: 1px solid rgba(232, 229, 223, 0.8); border-radius: 20px;
