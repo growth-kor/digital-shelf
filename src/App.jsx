@@ -3,7 +3,7 @@ import { db, storage, auth, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, getDocs, query, orderBy, where, doc, runTransaction, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Book as BookIcon, Plus, ChevronLeft, ChevronRight, Maximize2, X, ArrowRight, Upload, Trash2 } from 'lucide-react';
+import { Book as BookIcon, Plus, ChevronLeft, ChevronRight, Maximize2, X, ArrowRight, Upload, Trash2, Zap, Cloud } from 'lucide-react';
 import HTMLFlipBook from 'react-pageflip';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
@@ -89,7 +89,9 @@ export default function App() {
   const [globalUsage, setGlobalUsage] = useState(0);
   const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
-  const [currentPage, setCurrentPage] = useState(0);
+  
+  // 사용자가 선택한 파일에 대한 업로드/로컬 저장 팝업 관리
+  const [pendingFile, setPendingFile] = useState(null);
   
   // 화면 짤림 방지 및 최대 넓이 채우기 알고리즘 규격
   const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
@@ -146,7 +148,7 @@ export default function App() {
     }
   };
 
-  // 사용자 제안 알고리즘: 세로 맞춤과 가로 맞춤 중 최대 면적(Area)을 사용하는 규격 자동 계산
+  // 세로 맞춤과 가로 맞춤 중 최대 면적(Area)을 사용하는 완벽 중앙 정렬 규격 자동 계산
   const updateDimensions = (pdf) => {
     if (!pdf) return;
     pdf.getPage(1).then(page => {
@@ -154,16 +156,14 @@ export default function App() {
       const aspect = vp.width / vp.height; // 단일 페이지 비율
 
       const isFull = !!document.fullscreenElement;
-      // 풀스크린 상태에서는 여백을 극도로 줄임
-      const maxH = Math.max(300, window.innerHeight - (isFull ? 16 : 48)); 
+      // 상하좌우 여백을 최소화하여 정중앙 배치
+      const maxH = Math.max(300, window.innerHeight - (isFull ? 12 : 36)); 
       const maxW = Math.max(400, window.innerWidth - (isFull ? 12 : 24));  
 
-      // 옵션 A: 세로에 딱 맞추는 경우
       let pageH_A = maxH;
       let pageW_A = pageH_A * aspect;
       let validA = (pageW_A * 2 <= maxW);
 
-      // 옵션 B: 가로에 딱 맞추는 경우
       let pageW_B = maxW / 2;
       let pageH_B = pageW_B / aspect;
       let validB = (pageH_B <= maxH);
@@ -171,7 +171,6 @@ export default function App() {
       let finalW, finalH;
 
       if (validA && validB) {
-        // 둘 다 가능한 경우 면적이 더 큰 쪽(가로/세로 중 더 많이 채우는 쪽) 선택
         const areaA = (pageW_A * 2) * pageH_A;
         const areaB = (pageW_B * 2) * pageH_B;
         if (areaA >= areaB) {
@@ -192,7 +191,6 @@ export default function App() {
     });
   };
 
-  // 창 크기 조절 및 전체 화면 전환 시 딜레이 없는 즉시 재계산
   useEffect(() => {
     const handleResize = () => {
       if (pdfDoc) updateDimensions(pdfDoc);
@@ -205,16 +203,19 @@ export default function App() {
     };
   }, [pdfDoc]);
 
+  // 스트리밍 스트림 로딩을 통한 초고속 PDF 오픈
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
     setDownloadProgress('0%');
-    setCurrentPage(0);
     
     const loadingTask = pdfjsLib.getDocument({ 
       url: selectedBook.url, 
       cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', 
-      cMapPacked: true 
+      cMapPacked: true,
+      rangeChunkSize: 65536 * 16, // 1MB 청크 단위 속도 최적화
+      disableAutoFetch: false,
+      disableStream: false
     });
 
     loadingTask.onProgress = (progressData) => {
@@ -230,7 +231,7 @@ export default function App() {
     loadingTask.promise.then(pdf => { 
       setPdfDoc(pdf); 
       updateDimensions(pdf);
-      setTimeout(() => setIsOpening(false), 600); 
+      setTimeout(() => setIsOpening(false), 400); 
     })
     .catch(err => {
       console.error("PDF 로드 에러:", err);
@@ -274,45 +275,64 @@ export default function App() {
     setDragOver(false);
     dragCounter.current = 0;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      doUpload(e.dataTransfer.files[0]);
+      onFileSelected(e.dataTransfer.files[0]);
     }
   };
 
-  const doUpload = async file => {
-    if (!file || !user) return;
+  // 파일이 선택되거나 드롭되었을 때 팝업을 띄워 사용자에게 선택 권한 제공
+  const onFileSelected = (file) => {
+    if (!file) return;
     if (!file.name.endsWith('.pdf')) {
       alert('PDF 파일만 등록 가능합니다. / Only PDF files can be loaded.');
       return;
     }
-    
     const MAX_SIZE = 500 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       alert('파일 크기가 500MB를 초과합니다. / File size exceeds 500MB.');
       return;
     }
+    setPendingFile(file);
+  };
 
-    if (!isCloudUser) {
-      if (localBooks.length >= 5) {
-        alert('무료 회원은 최대 5권까지만 추가할 수 있습니다. / Free members can only add up to 5 books.');
-        return;
-      }
-      
-      const url = URL.createObjectURL(file);
-      const newBook = {
-        id: Date.now().toString(),
-        title: file.name,
-        size: file.size,
-        url,
-        file
-      };
-      setLocalBooks(prev => [...prev, newBook]);
+  // 1. ⚡ 즉시 열기 (0.1초 로컬 모드)
+  const handleQuickOpen = (file) => {
+    const targetFile = file || pendingFile;
+    if (!targetFile) return;
+
+    if (!isCloudUser && localBooks.length >= 5) {
+      alert('무료 회원은 최대 5권까지만 추가할 수 있습니다. / Free members can only add up to 5 books.');
+      setPendingFile(null);
       return;
     }
 
+    const localUrl = URL.createObjectURL(targetFile);
+    const newBook = {
+      id: Date.now().toString(),
+      title: targetFile.name,
+      size: targetFile.size,
+      url: localUrl,
+      isLocal: true,
+      file: targetFile
+    };
+
+    if (!isCloudUser) {
+      setLocalBooks(prev => [newBook, ...prev]);
+    }
+
+    setPendingFile(null);
+    setSelectedBook(newBook); // 팝업 닫고 즉시 뷰어로 열기!
+  };
+
+  // 2. ☁️ 클라우드에 서버 저장
+  const handleCloudSave = async (file) => {
+    const targetFile = file || pendingFile;
+    if (!targetFile || !user) return;
+    setPendingFile(null);
+
     setUploading(true); 
     setProgress(0);
-    const sRef = ref(storage, `pdfs/${user.uid}/${Date.now()}_${file.name}`);
-    const task = uploadBytesResumable(sRef, file);
+    const sRef = ref(storage, `pdfs/${user.uid}/${Date.now()}_${targetFile.name}`);
+    const task = uploadBytesResumable(sRef, targetFile);
     
     task.on('state_changed', 
       s => setProgress(Math.round(s.bytesTransferred / s.totalBytes * 100)),
@@ -327,12 +347,12 @@ export default function App() {
           await runTransaction(db, async t => {
             const sr = doc(db, 'global_stats', 'storage');
             const sd = await t.get(sr);
-            t.set(sr, { totalBytes: (sd.exists() ? sd.data().totalBytes : 0) + file.size }, { merge: true });
+            t.set(sr, { totalBytes: (sd.exists() ? sd.data().totalBytes : 0) + targetFile.size }, { merge: true });
             t.set(doc(collection(db, 'books')), { 
-              title: file.name, 
+              title: targetFile.name, 
               url, 
               userId: user.uid, 
-              size: file.size, 
+              size: targetFile.size, 
               createdAt: new Date() 
             });
           });
@@ -350,13 +370,13 @@ export default function App() {
   const deleteBook = async (book, e) => {
     e.stopPropagation();
     
-    const confirmMsg = isCloudUser 
+    const confirmMsg = isCloudUser && !book.isLocal
       ? '이 책을 서버에서 완전히 삭제하시겠습니까? / Are you sure you want to permanently delete this book from the server?' 
       : '선반에서 이 책을 빼시겠습니까? / Are you sure you want to remove this book from the shelf?';
       
     if (!confirm(confirmMsg)) return;
 
-    if (!isCloudUser) {
+    if (!isCloudUser || book.isLocal) {
       URL.revokeObjectURL(book.url);
       setLocalBooks(prev => prev.filter(b => b.id !== book.id));
       if (selectedBook?.id === book.id) {
@@ -437,7 +457,7 @@ export default function App() {
           <div className="drop-zone" onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDrop={handleDrop}>
             <Upload size={56} strokeWidth={1.5} />
             <p>DROP PDF ANYWHERE</p>
-            <span>페이지 어디든 파일만 올려두면 바로 책장에 등록됩니다 / Drop file anywhere</span>
+            <span>페이지 어디든 파일만 올려두면 바로 등록됩니다 / Drop file anywhere</span>
           </div>
         )}
         
@@ -452,9 +472,50 @@ export default function App() {
             <button className="add-btn" onClick={() => fileInputRef.current?.click()}>
               <Plus size={18} strokeWidth={3} /> ADD PDF
             </button>
-            <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden-input" onChange={e => doUpload(e.target.files[0])} />
+            <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden-input" onChange={e => onFileSelected(e.target.files[0])} />
           </div>
         </header>
+
+        {/* 선택 옵션 팝업 모달 */}
+        {pendingFile && (
+          <div className="modal-overlay">
+            <div className="choice-card">
+              <div className="choice-header">
+                <BookIcon size={32} color="#2b5c4f" />
+                <h3 className="choice-file-name">{pendingFile.name}</h3>
+                <p className="choice-file-size">{(pendingFile.size / 1024 / 1024).toFixed(1)} MB</p>
+              </div>
+
+              <p className="choice-question">이 PDF 파일을 어떻게 처리하시겠습니까?</p>
+
+              <div className="choice-buttons">
+                <button className="choice-btn quick-btn" onClick={() => handleQuickOpen(pendingFile)}>
+                  <div className="choice-btn-icon"><Zap size={22} color="#cc7452" /></div>
+                  <div className="choice-btn-text">
+                    <strong>⚡ 즉시 읽기 (0.1초 로컬 모드)</strong>
+                    <span>서버 업로드 없이 0.1초 만에 브라우저에서 바로 엽니다.</span>
+                  </div>
+                </button>
+
+                {isCloudUser ? (
+                  <button className="choice-btn cloud-btn" onClick={() => handleCloudSave(pendingFile)}>
+                    <div className="choice-btn-icon"><Cloud size={22} color="#2b5c4f" /></div>
+                    <div className="choice-btn-text">
+                      <strong>☁️ 클라우드 저장 (서버 영구 보관)</strong>
+                      <span>Firebase 서버에 올려 다른 기기에서도 서재를 동기화합니다.</span>
+                    </div>
+                  </button>
+                ) : (
+                  <div className="cloud-disabled-note">
+                    <span>💡 클라우드 저장 기능은 승인된 회원 전용입니다.</span>
+                  </div>
+                )}
+              </div>
+
+              <button className="choice-cancel-btn" onClick={() => setPendingFile(null)}>취소 / Cancel</button>
+            </div>
+          </div>
+        )}
 
         {/* Bilingual Info Card */}
         <div className="info-card">
@@ -560,10 +621,8 @@ export default function App() {
         <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
           <>
-            <div className="flipbook-wrap" style={{
-              transform: currentPage === 0 ? `translateX(-${dimensions.width / 2}px)` : 'translateX(0)',
-              transition: 'transform 0.35s ease'
-            }}>
+            {/* showCover={false}로 설정하여 정중앙에 100% PERFECTLY CENTERED 배치 */}
+            <div className="flipbook-wrap">
               <HTMLFlipBook
                 key={`${dimensions.width}-${dimensions.height}`}
                 width={dimensions.width}
@@ -571,10 +630,9 @@ export default function App() {
                 size="fixed"
                 minWidth={200} maxWidth={3200}
                 minHeight={300} maxHeight={4000}
-                showCover={true}
+                showCover={false}
                 maxShadowOpacity={0.35}
                 mobileScrollSupport={true}
-                onFlip={e => setCurrentPage(e.data)}
                 ref={bookRef}>
                 {[...Array(pdfDoc.numPages)].map((_, i) => (
                   <Page 
@@ -706,6 +764,36 @@ const css = `
   .add-btn:hover { background: #347060; transform: translateY(-2px); box-shadow: 0 8px 20px rgba(43,92,79,.2); }
   .hidden-input { display: none; }
 
+  /* Modal Overlay & Choice Card */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(27, 32, 46, 0.4);
+    backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .choice-card {
+    background: #ffffff; border: 1px solid #e8e5df; border-radius: 28px;
+    padding: 36px; width: 440px; max-width: 90vw; text-align: center;
+    box-shadow: 0 20px 50px rgba(27,32,46,.12); animation: fade-up .3s ease both;
+  }
+  .choice-header { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 20px; }
+  .choice-file-name { font-size: 16px; font-weight: 700; color: #1b202e; word-break: break-all; }
+  .choice-file-size { font-family: 'DM Mono', monospace; font-size: 12px; color: #6b7080; }
+  .choice-question { font-size: 14px; font-weight: 700; color: #2b5c4f; margin-bottom: 24px; }
+  .choice-buttons { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+  .choice-btn {
+    display: flex; align-items: center; gap: 16px; padding: 16px 20px;
+    border-radius: 16px; border: 1px solid #e8e5df; background: #faf9f6;
+    cursor: pointer; text-align: left; transition: all .2s;
+  }
+  .choice-btn:hover { transform: translateY(-2px); border-color: #2b5c4f; background: #ffffff; box-shadow: 0 8px 20px rgba(43,92,79,.08); }
+  .choice-btn-icon { width: 44px; height: 44px; border-radius: 12px; background: #ffffff; border: 1px solid #e8e5df; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .choice-btn-text strong { display: block; font-size: 14px; color: #1b202e; margin-bottom: 2px; }
+  .choice-btn-text span { font-size: 11px; color: #6b7080; line-height: 1.4; }
+  .cloud-disabled-note { font-size: 12px; color: #6b7080; background: #f7f4eb; padding: 12px; border-radius: 12px; border: 1px solid #e8e5df; }
+  .choice-cancel-btn { background: none; border: none; font-size: 13px; font-weight: 700; color: #6b7080; cursor: pointer; padding: 8px; transition: color .2s; }
+  .choice-cancel-btn:hover { color: #cc7452; }
+
   /* Info Card Style */
   .info-card {
     background: #ffffff; border: 1px solid #e8e5df; border-radius: 20px;
@@ -830,13 +918,13 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* Reader Screen - 최대 면적 100% 활용 오토핏 */
+  /* Reader Screen - 100% 정중앙 완벽 중앙 정렬 배치 */
   .reader-screen {
-    height: 100dvh; width: 100vw; background: #f5f3ed;
+    height: 100dvh; width: 100vw; background: #faf9f6;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     position: relative; font-family: 'Outfit', sans-serif;
-    overflow: hidden; padding: 0;
+    overflow: hidden; padding: 0; margin: 0;
   }
   .reader-close {
     position: fixed; top: 16px; left: 16px; z-index: 200;
@@ -850,11 +938,9 @@ const css = `
   .reader-close:hover { background: #f7f4eb; color: #cc7452; border-color: #cc7452; }
 
   .flipbook-wrap {
-    width: 100vw;
-    height: 100dvh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    width: 100vw; height: 100dvh;
     overflow: hidden;
   }
 
@@ -885,7 +971,7 @@ const css = `
     animation: dot-pulse 1.2s ease-in-out infinite;
   }
 
-  /* Reader toolbar - 하단 반투명 오버레이 처리로 뷰어 공간을 차지하지 않음 */
+  /* Reader toolbar */
   .reader-toolbar {
     position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
     z-index: 200; display: flex; align-items: center; gap: 6px;
