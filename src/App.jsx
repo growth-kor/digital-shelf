@@ -16,14 +16,18 @@ const AUTHORIZED_EMAILS = [
 
 const fileCache = new Map();
 
-const Page = React.forwardRef(({ pdfDoc, number, pageHeight }, ref) => {
+const Page = React.forwardRef(({ pdfDoc, number, pageHeight, currentPage }, ref) => {
   const canvasRef = useRef(null);
   const [rendered, setRendered] = useState(false);
 
+  // 렌더링 폭주로 인한 메모리 초과(Error 5)를 막기 위해 현재 페이지 기준 +/- 2페이지만 렌더링 (Lazy Loading)
+  const isVisible = Math.abs(currentPage - (number - 1)) <= 2;
+
   useEffect(() => {
     let alive = true;
+    if (!pdfDoc || !isVisible || rendered) return;
+    
     (async () => {
-      if (!pdfDoc) return;
       try {
         const page = await pdfDoc.getPage(number);
         const unscaledVp = page.getViewport({ scale: 1.0 });
@@ -41,7 +45,7 @@ const Page = React.forwardRef(({ pdfDoc, number, pageHeight }, ref) => {
       } catch (e) { console.error(e); }
     })();
     return () => { alive = false; };
-  }, [pdfDoc, number, pageHeight]);
+  }, [pdfDoc, number, pageHeight, isVisible, rendered]);
 
   return (
     <div ref={ref} style={{ background: '#fff', width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
@@ -90,6 +94,7 @@ export default function App() {
   const [globalUsage, setGlobalUsage] = useState(0);
   const [pageInput, setPageInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const [currentPage, setCurrentPage] = useState(0);
   
   // 사용자가 선택한 파일에 대한 업로드/로컬 저장 팝업 관리
   const [pendingFile, setPendingFile] = useState(null);
@@ -164,34 +169,19 @@ export default function App() {
       const maxH = Math.max(300, window.innerHeight - topSpace - bottomSpace); 
       const maxW = Math.max(300, window.innerWidth - (isFull ? 0 : 16));  
 
-      const isPortrait = window.innerWidth < window.innerHeight;
-
+      // 네이버 시리즈처럼 항상 단일 페이지 뷰어로 꽉 채우기 (무조건 단일 페이지)
       let finalW, finalH;
+      let pageH = maxH;
+      let pageW = pageH * aspect;
 
-      if (isPortrait) {
-        // 모바일/태블릿 세로 모드: 단일 페이지 화면 꽉 채우기
-        let pageH_A = maxH;
-        let pageW_A = pageH_A * aspect;
-        let validA = (pageW_A <= maxW);
-
-        let pageW_B = maxW;
-        let pageH_B = pageW_B / aspect;
-        let validB = (pageH_B <= maxH);
-
-        if (validA) { finalW = pageW_A; finalH = pageH_A; }
-        else { finalW = pageW_B; finalH = pageH_B; }
+      if (pageW <= maxW) {
+        // 높이에 맞춤
+        finalW = pageW;
+        finalH = pageH;
       } else {
-        // PC 가로 모드: 2페이지 펼침 화면 최대화
-        let pageH_A = maxH;
-        let pageW_A = pageH_A * aspect;
-        let validA = (pageW_A * 2 <= maxW);
-
-        let pageW_B = maxW / 2;
-        let pageH_B = pageW_B / aspect;
-        let validB = (pageH_B <= maxH);
-
-        if (validA) { finalW = pageW_A; finalH = pageH_A; }
-        else { finalW = pageW_B; finalH = pageH_B; }
+        // 너비에 맞춤
+        finalW = maxW;
+        finalH = maxW / aspect;
       }
 
       setDimensions({
@@ -226,7 +216,7 @@ export default function App() {
       url: instantUrl, 
       cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', 
       cMapPacked: true,
-      disableRange: true, // 여러 번 쪼개서 요청하지 않고 한 번에 통째로 다운로드하여 속도 극대화
+      // disableRange 제거: PDF.js의 스마트 스트리밍을 활용해 현재 필요한 페이지만 빠르게 로딩
       disableAutoFetch: false,
       disableStream: false
     });
@@ -243,6 +233,7 @@ export default function App() {
 
     loadingTask.promise.then(pdf => { 
       setPdfDoc(pdf); 
+      setCurrentPage(0); // 책 열 때 첫 페이지로 초기화
       updateDimensions(pdf);
       setTimeout(() => setIsOpening(false), 400); 
     })
@@ -638,29 +629,33 @@ export default function App() {
         <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
           <>
-            {/* 첫 페이지를 표지(가운데)로 배치하고, 세로 모드일 때는 단일 페이지 뷰어로 자동 전환 */}
+            {/* 컨테이너 너비를 정확히 1페이지 너비로 제한하여 무조건 단일 페이지(웹툰 뷰어 모드)로 동작하게 강제함 */}
             <div className="flipbook-wrap">
-              <HTMLFlipBook
-                key={`${dimensions.width}-${dimensions.height}`}
-                width={dimensions.width}
-                height={dimensions.height}
-                size="fixed"
-                minWidth={200} maxWidth={3200}
-                minHeight={300} maxHeight={4000}
-                showCover={true}
-                usePortrait={true}
-                maxShadowOpacity={0.35}
-                mobileScrollSupport={true}
-                ref={bookRef}>
-                {[...Array(pdfDoc.numPages)].map((_, i) => (
-                  <Page 
-                    key={i} 
-                    number={i + 1} 
-                    pdfDoc={pdfDoc} 
-                    pageHeight={dimensions.height} 
-                  />
-                ))}
-              </HTMLFlipBook>
+              <div style={{ width: dimensions.width, height: dimensions.height, display: 'flex', justifyContent: 'center' }}>
+                <HTMLFlipBook
+                  key={`${dimensions.width}-${dimensions.height}`}
+                  width={dimensions.width}
+                  height={dimensions.height}
+                  size="fixed"
+                  minWidth={200} maxWidth={3200}
+                  minHeight={300} maxHeight={4000}
+                  showCover={true}
+                  usePortrait={true}
+                  onFlip={(e) => setCurrentPage(e.data)}
+                  maxShadowOpacity={0.35}
+                  mobileScrollSupport={true}
+                  ref={bookRef}>
+                  {[...Array(pdfDoc.numPages)].map((_, i) => (
+                    <Page 
+                      key={i} 
+                      number={i + 1} 
+                      pdfDoc={pdfDoc} 
+                      pageHeight={dimensions.height}
+                      currentPage={currentPage} 
+                    />
+                  ))}
+                </HTMLFlipBook>
+              </div>
             </div>
             <div className="reader-toolbar">
               <button className="tb-btn" onClick={() => bookRef.current.pageFlip().flipPrev()}>
