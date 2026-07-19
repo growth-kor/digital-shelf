@@ -16,7 +16,7 @@ const AUTHORIZED_EMAILS = [
 const fileCache = new Map();
 const localFileMap = new Map();
 
-// 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트 (100% 정밀 핏)
+// 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트 (100% 정밀 핏 & 하단 여백 완벽 제거)
 function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   const canvasRef = useRef(null);
 
@@ -61,16 +61,25 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
 
   return (
     <div style={{
-      width, height, background: '#ffffff', position: 'relative',
-      overflow: 'hidden', boxShadow, transition: 'all 0.15s ease',
-      borderRadius: shadowType === 'left' ? '4px 0 0 4px' : (shadowType === 'right' ? '0 4px 4px 0' : '4px')
+      width,
+      height: 'auto',
+      maxHeight: height,
+      background: '#ffffff',
+      position: 'relative',
+      overflow: 'hidden',
+      boxShadow,
+      transition: 'all 0.15s ease',
+      borderRadius: shadowType === 'left' ? '4px 0 0 4px' : (shadowType === 'right' ? '0 4px 4px 0' : '4px'),
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
     }}>
-      <canvas ref={canvasRef} className="pdf-page-canvas" style={{ width: '100%', height: '100%', display: 'block' }} />
+      <canvas ref={canvasRef} className="pdf-page-canvas" style={{ width: '100%', height: 'auto', maxHeight: '100%', display: 'block' }} />
     </div>
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (대형 직사각형 돋보기 포함)
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (W/A/S/D 게이머 키 & 무손구조 돋보기)
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -85,12 +94,14 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const lensCanvasRef = useRef(null);
   const numPages = pdfDoc.numPages;
 
-  // 첫 페이지 종횡비 가져오기
+  // 첫 페이지 종횡비 가져오기 (즉시 계산)
   useEffect(() => {
     if (pdfDoc) {
       pdfDoc.getPage(1).then(page => {
         const vp = page.getViewport({ scale: 1.0 });
-        setPageAspect(vp.width / vp.height);
+        if (vp.width && vp.height) {
+          setPageAspect(vp.width / vp.height);
+        }
       });
     }
   }, [pdfDoc]);
@@ -149,7 +160,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
       window.removeEventListener('resize', calcDimensions);
       window.removeEventListener('fullscreenchange', calcDimensions);
     };
-  }, [pageAspect, showTwoPage]);
+  }, [pageAspect, showTwoPage, pdfDoc, isTwoPage, currentPage]);
 
   // 마우스 이동 감지 (툴바 자동 숨김 & PDF 영역 위에서만 돋보기 활성화)
   const handleMouseMove = (e) => {
@@ -243,10 +254,12 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     }
   };
 
+  // 키보드 조작: 방향키 + 게이머 커스텀 키 (W/A/S/D) 지원!
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === 'ArrowRight' || e.key === 'Space') { turnNext(); }
-      if (e.key === 'ArrowLeft') { turnPrev(); }
+      const k = e.key.toLowerCase();
+      if (k === 'arrowright' || k === 'space' || k === 'd' || k === 's') { turnNext(); }
+      if (k === 'arrowleft' || k === 'w' || k === 'a') { turnPrev(); }
       if (e.key === 'Escape') { onClose(); }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -279,17 +292,17 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
         </div>
       )}
 
-      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (돋보기 활성화 시 툴팁 제거) */}
+      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (돋보기 작동 시 손가락/십자가 커서 무소유 숨김) */}
       <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
         <div
-          style={{ flex: 1, cursor: 'pointer' }}
+          style={{ flex: 1, cursor: isMagnifierActive && isOverPage ? 'none' : 'pointer' }}
           onClick={turnPrev}
-          title={isMagnifierActive ? '' : '이전 페이지 (←)'}
+          title={isMagnifierActive ? '' : '이전 페이지 (← / W)'}
         />
         <div
-          style={{ flex: 1, cursor: 'pointer' }}
+          style={{ flex: 1, cursor: isMagnifierActive && isOverPage ? 'none' : 'pointer' }}
           onClick={turnNext}
-          title={isMagnifierActive ? '' : '다음 페이지 (→)'}
+          title={isMagnifierActive ? '' : '다음 페이지 (→ / D)'}
         />
       </div>
 
@@ -336,7 +349,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           transition: 'all 0.3s ease'
         }}
       >
-        <button className="tb-btn" onClick={turnPrev} title="이전 (←)"><ChevronLeft size={20} /></button>
+        <button className="tb-btn" onClick={turnPrev} title="이전 (← / W)"><ChevronLeft size={20} /></button>
         <div className="tb-divider" />
         <div className="tb-page-jump">
           <input
@@ -377,7 +390,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           <Maximize2 size={18} />
         </button>
         <div className="tb-divider" />
-        <button className="tb-btn" onClick={turnNext} title="다음 (→)"><ChevronRight size={20} /></button>
+        <button className="tb-btn" onClick={turnNext} title="다음 (→ / D)"><ChevronRight size={20} /></button>
       </div>
     </div>
   );
@@ -471,16 +484,34 @@ export default function App() {
     }
   };
 
-  // 초고속 PDF 오픈 (로컬 파일 ArrayBuffer 직렬 처리로 0.05초 로딩)
+  // 초고속 PDF 오픈 (로컬/클라우드 캐싱 & 100% 대역폭 직렬 Fetch로 0초 로딩)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
     setDownloadProgress('0%');
-    
-    const fileObj = selectedBook.file || localFileMap.get(`${selectedBook.title}_${selectedBook.size}`);
 
+    const cacheKey = `${selectedBook.id || selectedBook.title}_${selectedBook.size}`;
+    
+    // 1. 메모리 캐시(fileCache)에 이미 저장된 책이면 0.00초 만에 즉시 오픈!
+    if (fileCache.has(cacheKey)) {
+      const cachedBuf = fileCache.get(cacheKey);
+      const loadingTask = pdfjsLib.getDocument({
+        data: new Uint8Array(cachedBuf),
+        cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
+        cMapPacked: true,
+      });
+      loadingTask.promise.then(pdf => {
+        setPdfDoc(pdf);
+        setTimeout(() => setIsOpening(false), 30);
+      });
+      return;
+    }
+
+    // 2. 로컬 파일 객체가 있는 경우
+    const fileObj = selectedBook.file || localFileMap.get(`${selectedBook.title}_${selectedBook.size}`);
     if (fileObj) {
       fileObj.arrayBuffer().then(buf => {
+        fileCache.set(cacheKey, buf); // 메모리에 캐싱
         const loadingTask = pdfjsLib.getDocument({
           data: new Uint8Array(buf),
           cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
@@ -488,53 +519,59 @@ export default function App() {
         });
         loadingTask.promise.then(pdf => {
           setPdfDoc(pdf);
-          setTimeout(() => setIsOpening(false), 50);
-        }).catch(err => {
-          console.error("Local PDF ArrayBuffer error:", err);
-          alert("로컬 PDF 로드 실패: " + err.message);
-          setIsOpening(false);
-          setSelectedBook(null);
+          setTimeout(() => setIsOpening(false), 30);
         });
-      }).catch(err => {
-        console.error("ArrayBuffer read fail:", err);
-        alert("파일 읽기 오류: " + err.message);
-        setIsOpening(false);
-        setSelectedBook(null);
       });
       return;
     }
 
-    const cacheKey = `${selectedBook.title}_${selectedBook.size}`;
-    const instantUrl = fileCache.get(cacheKey) || selectedBook.url;
+    // 3. 클라우드 URL인 경우: 브라우저 네이티브 fetch() Stream으로 와이파이 대역폭 100% 한번에 끌어오기
+    fetch(selectedBook.url)
+      .then(async response => {
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : selectedBook.size || 0;
+        const reader = response.body.getReader();
+        let receivedLength = 0;
+        let chunks = [];
 
-    const loadingTask = pdfjsLib.getDocument({ 
-      url: instantUrl, 
-      cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', 
-      cMapPacked: true,
-      disableAutoFetch: false,
-      disableStream: false
-    });
+        while(true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          receivedLength += value.length;
+          if (total > 0) {
+            const percent = Math.round((receivedLength / total) * 100);
+            setDownloadProgress(`${percent}%`);
+          } else {
+            setDownloadProgress(`${(receivedLength / 1024 / 1024).toFixed(1)} MB`);
+          }
+        }
 
-    loadingTask.onProgress = (progressData) => {
-      if (progressData.total > 0) {
-        const percent = Math.round((progressData.loaded / progressData.total) * 100);
-        setDownloadProgress(`${percent}%`);
-      } else {
-        const loadedMB = (progressData.loaded / 1024 / 1024).toFixed(1);
-        setDownloadProgress(`${loadedMB} MB`);
-      }
-    };
+        const chunksAll = new Uint8Array(receivedLength);
+        let position = 0;
+        for(let chunk of chunks) {
+          chunksAll.set(chunk, position);
+          position += chunk.length;
+        }
 
-    loadingTask.promise.then(pdf => { 
-      setPdfDoc(pdf); 
-      setTimeout(() => setIsOpening(false), 100); 
-    })
-    .catch(err => {
-      console.error("PDF 로드 에러:", err);
-      alert("PDF 로드 실패: " + err.message);
-      setIsOpening(false);
-      setSelectedBook(null);
-    });
+        const buf = chunksAll.buffer;
+        fileCache.set(cacheKey, buf); // 첫 다운로드 후 메모리에 영구 저장하여 이후 클릭 시 0초 로딩
+
+        const loadingTask = pdfjsLib.getDocument({
+          data: chunksAll,
+          cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
+          cMapPacked: true,
+        });
+        const pdf = await loadingTask.promise;
+        setPdfDoc(pdf);
+        setTimeout(() => setIsOpening(false), 30);
+      })
+      .catch(err => {
+        console.error("Cloud PDF fetch error:", err);
+        alert("PDF 로드 실패: " + err.message);
+        setIsOpening(false);
+        setSelectedBook(null);
+      });
   }, [selectedBook]);
 
   const handleDragEnter = (e) => {
@@ -735,7 +772,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 4</h1>
+          <h1 className="shelf-title">PDF SHELF 5</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
