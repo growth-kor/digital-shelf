@@ -70,7 +70,17 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
 function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
+  const [showToolbar, setShowToolbar] = useState(true);
+  const timerRef = useRef(null);
   const numPages = pdfDoc.numPages;
+
+  const handleMouseMove = () => {
+    setShowToolbar(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setShowToolbar(false);
+    }, 2500);
+  };
 
   const isPortrait = window.innerWidth < window.innerHeight;
   const showTwoPage = isTwoPage && !isPortrait;
@@ -121,11 +131,11 @@ function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage 
   const calcW = showTwoPage && currentPage > 1 ? Math.floor(dimensions.width / 2) : dimensions.width;
 
   return (
-    <div className="reader-screen">
+    <div className="reader-screen" onMouseMove={handleMouseMove}>
       <button className="reader-close" onClick={onClose}><X size={18} /></button>
 
-      {/* 화면 좌우 영역 클릭으로 빠르게 페이지 넘기기 */}
-      <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
+      {/* zIndex: 25로 상향하여 PDF 페이지 직접 클릭 시에도 이전/다음 페이지로 즉시 이동 */}
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
         <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnPrev} title="이전 페이지 (←)" />
         <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnNext} title="다음 페이지 (→)" />
       </div>
@@ -162,8 +172,17 @@ function CustomPdfReader({ pdfDoc, dimensions, onClose, isTwoPage, setIsTwoPage 
         )}
       </div>
 
-      {/* 하단 툴바 */}
-      <div className="reader-toolbar" style={{ zIndex: 30 }}>
+      {/* 마우스 미조작 시 자동 페이드아웃되는 투명 툴바 */}
+      <div 
+        className="reader-toolbar" 
+        style={{ 
+          zIndex: 30,
+          opacity: showToolbar ? 1 : 0,
+          pointerEvents: showToolbar ? 'auto' : 'none',
+          transform: showToolbar ? 'translate(-50%, 0)' : 'translate(-50%, 20px)',
+          transition: 'all 0.3s ease'
+        }}
+      >
         <button className="tb-btn" onClick={turnPrev} title="이전 (←)"><ChevronLeft size={20} /></button>
         <div className="tb-divider" />
         <div className="tb-page-jump">
@@ -234,7 +253,7 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [pendingFile, setPendingFile] = useState(null);
   const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
-  const [isTwoPage, setIsTwoPage] = useState(false); // 기본값: 화면 최대 크기 단일(1P) 뷰어
+  const [isTwoPage, setIsTwoPage] = useState(true); // 기본값: 실감나는 2페이지 양면(2P) 뷰어 모드
 
   const dragCounter = useRef(0);
   const fileInputRef = useRef(null);
@@ -598,7 +617,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF</h1>
+          <h1 className="shelf-title">PDF SHELF 1</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
