@@ -79,7 +79,7 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (최대 3배 울트라 초대형 돋보기)
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -99,7 +99,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const lensW = Math.round(380 * magnifierScale);
   const lensH = Math.round(220 * magnifierScale);
 
-  // 마우스 휠 조작으로 돋보기 렌즈 크기 실시간 조절 (최대 3.0배까지 확장!)
+  // 마우스 휠 조작으로 돋보기 렌즈 크기 실시간 조절
   useEffect(() => {
     if (!isMagnifierActive) return;
     const handleWheel = (e) => {
@@ -456,7 +456,7 @@ export default function App() {
   const [userUsageList, setUserUsageList] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [pendingFile, setPendingFile] = useState(null);
-  const [isTwoPage, setIsTwoPage] = useState(true); // 기본값: 2페이지 양면(2P) 뷰어 모드
+  const [isTwoPage, setIsTwoPage] = useState(true);
 
   const dragCounter = useRef(0);
   const fileInputRef = useRef(null);
@@ -547,7 +547,67 @@ export default function App() {
     }
   };
 
-  // 초고속 & 100% 안정적인 PDF 로더 (CORS/Cache API 에러 완벽 차단 & 0초 메모리 캐싱)
+  // 8채널 다중 HTTP Range 병렬 다운로드 엔진 (최대 물리학 전속력 다운로드)
+  const fetchParallelChunks = async (url, totalSize, cacheKey) => {
+    const THREAD_COUNT = 8;
+    const chunkSize = Math.ceil(totalSize / THREAD_COUNT);
+    let loadedBytes = new Array(THREAD_COUNT).fill(0);
+
+    const updateProgress = () => {
+      const sum = loadedBytes.reduce((a, b) => a + b, 0);
+      const pct = Math.min(99, Math.round((sum / totalSize) * 100));
+      setDownloadProgress(`${pct}%`);
+    };
+
+    const fetchChunk = async (index) => {
+      const start = index * chunkSize;
+      const end = Math.min(totalSize - 1, (index + 1) * chunkSize - 1);
+      
+      const res = await fetch(url, {
+        headers: { 'Range': `bytes=${start}-${end}` }
+      });
+
+      if (res.status === 206 || res.status === 200) {
+        const reader = res.body.getReader();
+        let chunkBytes = [];
+        let chunkLoaded = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunkBytes.push(value);
+          chunkLoaded += value.length;
+          loadedBytes[index] = chunkLoaded;
+          updateProgress();
+        }
+
+        const chunkBuffer = new Uint8Array(chunkLoaded);
+        let pos = 0;
+        for (let b of chunkBytes) {
+          chunkBuffer.set(b, pos);
+          pos += b.length;
+        }
+        return { index, buffer: chunkBuffer, loaded: chunkLoaded };
+      } else {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    };
+
+    const promises = [];
+    for (let i = 0; i < THREAD_COUNT; i++) {
+      promises.push(fetchChunk(i));
+    }
+
+    const results = await Promise.all(promises);
+    const finalBuffer = new Uint8Array(totalSize);
+    results.forEach(({ index, buffer }) => {
+      finalBuffer.set(buffer, index * chunkSize);
+    });
+
+    return finalBuffer.buffer;
+  };
+
+  // 초고속 PDF 오픈 (8채널 병렬 다운로드 & 0초 메모리 Caching)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
@@ -566,14 +626,11 @@ export default function App() {
       loadingTask.promise.then(pdf => {
         setPdfDoc(pdf);
         setTimeout(() => setIsOpening(false), 30);
-      }).catch(() => {
-        fileCache.delete(cacheKey);
-        loadPdfFromUrl(selectedBook.url, cacheKey);
       });
       return;
     }
 
-    // 2. 로컬 파일 객체가 있는 경우
+    // 2. 로컬 파일인 경우
     const fileObj = selectedBook.file || localFileMap.get(`${selectedBook.title}_${selectedBook.size}`);
     if (fileObj) {
       fileObj.arrayBuffer().then(buf => {
@@ -587,15 +644,34 @@ export default function App() {
           setPdfDoc(pdf);
           setTimeout(() => setIsOpening(false), 30);
         });
-      }).catch(() => {
-        loadPdfFromUrl(selectedBook.url, cacheKey);
       });
       return;
     }
 
-    // 3. 클라우드 URL인 경우 PDF.js 내장 100% 안정적 스트림 수신기 로딩
-    loadPdfFromUrl(selectedBook.url, cacheKey);
+    // 3. 8채널 다중 HTTP Range 병렬 초고속 다운로드 시도
+    if (selectedBook.size && selectedBook.size > 1024 * 1024) {
+      fetchParallelChunks(selectedBook.url, selectedBook.size, cacheKey)
+        .then(buf => {
+          fileCache.set(cacheKey, buf);
+          const loadingTask = pdfjsLib.getDocument({
+            data: new Uint8Array(buf),
+            cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
+            cMapPacked: true,
+          });
+          return loadingTask.promise;
+        })
+        .then(pdf => {
+          setPdfDoc(pdf);
+          setTimeout(() => setIsOpening(false), 30);
+        })
+        .catch(() => {
+          // Fallback to standard PDF.js loader if parallel fetch blocked by CORS
+          loadPdfFromUrl(selectedBook.url, cacheKey);
+        });
+      return;
+    }
 
+    loadPdfFromUrl(selectedBook.url, cacheKey);
   }, [selectedBook]);
 
   const loadPdfFromUrl = (url, cacheKey) => {
@@ -837,7 +913,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 8</h1>
+          <h1 className="shelf-title">PDF SHELF 9</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
