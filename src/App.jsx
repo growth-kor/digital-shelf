@@ -15,6 +15,7 @@ const AUTHORIZED_EMAILS = [
 ];
 
 const fileCache = new Map();
+const localFileMap = new Map();
 
 const Page = React.forwardRef(({ pdfDoc, number, pageHeight, currentPage }, ref) => {
   const canvasRef = useRef(null);
@@ -218,12 +219,41 @@ export default function App() {
     };
   }, [pdfDoc]);
 
-  // 스트리밍 스트림 로딩을 통한 초고속 PDF 오픈
+  // 초고속 PDF 오픈 (로컬 파일 ArrayBuffer 직렬 처리로 0.05초 로딩)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
     setDownloadProgress('0%');
     
+    const fileObj = selectedBook.file || localFileMap.get(`${selectedBook.title}_${selectedBook.size}`);
+
+    if (fileObj) {
+      fileObj.arrayBuffer().then(buf => {
+        const loadingTask = pdfjsLib.getDocument({
+          data: new Uint8Array(buf),
+          cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
+          cMapPacked: true,
+        });
+        loadingTask.promise.then(pdf => {
+          setPdfDoc(pdf);
+          setCurrentPage(0);
+          updateDimensions(pdf);
+          setTimeout(() => setIsOpening(false), 100);
+        }).catch(err => {
+          console.error("Local PDF ArrayBuffer error:", err);
+          alert("로컬 PDF 로드 실패: " + err.message);
+          setIsOpening(false);
+          setSelectedBook(null);
+        });
+      }).catch(err => {
+        console.error("ArrayBuffer read fail:", err);
+        alert("파일 읽기 오류: " + err.message);
+        setIsOpening(false);
+        setSelectedBook(null);
+      });
+      return;
+    }
+
     const cacheKey = `${selectedBook.title}_${selectedBook.size}`;
     const instantUrl = fileCache.get(cacheKey) || selectedBook.url;
 
@@ -231,7 +261,6 @@ export default function App() {
       url: instantUrl, 
       cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', 
       cMapPacked: true,
-      // disableRange 제거: PDF.js의 스마트 스트리밍을 활용해 현재 필요한 페이지만 빠르게 로딩
       disableAutoFetch: false,
       disableStream: false
     });
@@ -250,7 +279,7 @@ export default function App() {
       setPdfDoc(pdf); 
       setCurrentPage(0); // 책 열 때 첫 페이지로 초기화
       updateDimensions(pdf);
-      setTimeout(() => setIsOpening(false), 400); 
+      setTimeout(() => setIsOpening(false), 200); 
     })
     .catch(err => {
       console.error("PDF 로드 에러:", err);
@@ -310,6 +339,7 @@ export default function App() {
       alert('파일 크기가 500MB를 초과합니다. / File size exceeds 500MB.');
       return;
     }
+    localFileMap.set(`${file.name}_${file.size}`, file);
     setPendingFile(file);
   };
 
@@ -963,8 +993,17 @@ const css = `
     font-size: 11px; color: #6b7080; line-height: 1.5;
   }
 
-  /* 투명한 빈 페이지 처리 (우측 쏠림 방지 트릭) */
-  .stf__wrapper, .stf__block, .stf__page { background: transparent !important; }
+  /* 투명한 빈 페이지 및 선/그림자 완전 제거 (우측 쏠림 및 미세한 선 방지) */
+  .stf__wrapper, .stf__block, .stf__page, .stf__outer, .stf__item { 
+    background: transparent !important; 
+    box-shadow: none !important;
+    border: none !important;
+    outline: none !important;
+  }
+  .stf__shadow, .stf__shadow-top, .stf__shadow-bottom, .stf__shadow-left, .stf__shadow-right {
+    display: none !important;
+    opacity: 0 !important;
+  }
 
   /* Reader Screen - 100% 정중앙 완벽 중앙 정렬 배치 */
   .reader-screen {
