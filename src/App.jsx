@@ -70,7 +70,7 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (직사각형 돋보기 포함)
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (대형 직사각형 돋보기 포함)
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -78,6 +78,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [pageAspect, setPageAspect] = useState(0.707); // 기본 A4 비율
   const [dimensions, setDimensions] = useState({ singleW: 400, singleH: 600 });
   const [isMagnifierActive, setIsMagnifierActive] = useState(false);
+  const [isOverPage, setIsOverPage] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1000, y: -1000 });
   
   const timerRef = useRef(null);
@@ -150,7 +151,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     };
   }, [pageAspect, showTwoPage]);
 
-  // 마우스 이동 감지 (툴바 자동 숨김 & 돋보기 위치 추적)
+  // 마우스 이동 감지 (툴바 자동 숨김 & PDF 영역 위에서만 돋보기 활성화)
   const handleMouseMove = (e) => {
     setShowToolbar(true);
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -158,16 +159,30 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
       setShowToolbar(false);
     }, 2500);
 
-    setMousePos({ x: e.clientX, y: e.clientY });
+    const mx = e.clientX;
+    const my = e.clientY;
+    setMousePos({ x: mx, y: my });
+
+    if (isMagnifierActive) {
+      const pageCanvases = document.querySelectorAll('.pdf-page-canvas');
+      let found = false;
+      pageCanvases.forEach(c => {
+        const r = c.getBoundingClientRect();
+        if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom) {
+          found = true;
+        }
+      });
+      setIsOverPage(found);
+    }
   };
 
-  // 돋보기 실시간 2.5배 고화질 크롭 렌더링
+  // 돋보기 대형 렌즈(360x200) 실시간 2.6배 고화질 크롭 렌더링
   useEffect(() => {
-    if (!isMagnifierActive) return;
+    if (!isMagnifierActive || !isOverPage) return;
     const lensCanvas = lensCanvasRef.current;
     if (!lensCanvas) return;
     const ctx = lensCanvas.getContext('2d');
-    ctx.clearRect(0, 0, 240, 140);
+    ctx.clearRect(0, 0, 360, 200);
 
     const pageCanvases = document.querySelectorAll('.pdf-page-canvas');
     pageCanvases.forEach(sourceCanvas => {
@@ -181,20 +196,20 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
         const clickX = (mousePos.x - rect.left) * scaleX;
         const clickY = (mousePos.y - rect.top) * scaleY;
 
-        const zoom = 2.2;
-        const sw = (240 / zoom) * scaleX;
-        const sh = (140 / zoom) * scaleY;
+        const zoom = 2.6; // 2.6배 시원하고 큼직하게 확대
+        const sw = (360 / zoom) * scaleX;
+        const sh = (200 / zoom) * scaleY;
         const sx = clickX - sw / 2;
         const sy = clickY - sh / 2;
 
         try {
-          ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, 240, 140);
+          ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, 360, 200);
         } catch (e) {
           console.error("Magnifier draw failure:", e);
         }
       }
     });
-  }, [mousePos, isMagnifierActive]);
+  }, [mousePos, isMagnifierActive, isOverPage]);
 
   const turnNext = () => {
     if (!showTwoPage) {
@@ -239,35 +254,43 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   }, [currentPage, showTwoPage, numPages]);
 
   return (
-    <div className="reader-screen" onMouseMove={handleMouseMove} style={{ cursor: isMagnifierActive ? 'crosshair' : 'default' }}>
+    <div className="reader-screen" onMouseMove={handleMouseMove}>
       <button className="reader-close" onClick={onClose}><X size={18} /></button>
 
-      {/* 직사각형 돋보기 렌즈 (마우스 커서 따라 이동) */}
-      {isMagnifierActive && (
+      {/* PDF 페이지 영역 안에서만 나타나는 대형 직사각형 돋보기 렌즈 (360x200) */}
+      {isMagnifierActive && isOverPage && (
         <div
           style={{
             position: 'fixed',
-            left: mousePos.x - 120,
-            top: mousePos.y - 70,
-            width: 240,
-            height: 140,
-            borderRadius: 14,
+            left: mousePos.x - 180,
+            top: mousePos.y - 100,
+            width: 360,
+            height: 200,
+            borderRadius: 16,
             border: '2.5px solid #2b5c4f',
-            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.35)',
+            boxShadow: '0 16px 40px rgba(0, 0, 0, 0.35)',
             overflow: 'hidden',
             pointerEvents: 'none',
             zIndex: 100,
             background: '#ffffff'
           }}
         >
-          <canvas ref={lensCanvasRef} width={240} height={140} style={{ width: '100%', height: '100%', display: 'block' }} />
+          <canvas ref={lensCanvasRef} width={360} height={200} style={{ width: '100%', height: '100%', display: 'block' }} />
         </div>
       )}
 
-      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (zIndex 25) */}
+      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (돋보기 활성화 시 툴팁 제거) */}
       <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
-        <div style={{ flex: 1, cursor: isMagnifierActive ? 'crosshair' : 'pointer' }} onClick={turnPrev} title="이전 페이지 (←)" />
-        <div style={{ flex: 1, cursor: isMagnifierActive ? 'crosshair' : 'pointer' }} onClick={turnNext} title="다음 페이지 (→)" />
+        <div
+          style={{ flex: 1, cursor: 'pointer' }}
+          onClick={turnPrev}
+          title={isMagnifierActive ? '' : '이전 페이지 (←)'}
+        />
+        <div
+          style={{ flex: 1, cursor: 'pointer' }}
+          onClick={turnNext}
+          title={isMagnifierActive ? '' : '다음 페이지 (→)'}
+        />
       </div>
 
       {/* PDF 뷰어 메인 공간 (100% 정중앙 플렉스 레이아웃) */}
@@ -337,11 +360,11 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           {isTwoPage ? '2P' : '1P'}
         </button>
         <div className="tb-divider" />
-        {/* 직사각형 돋보기 온/오프 버튼 */}
+        {/* 대형 직사각형 돋보기 온/오프 버튼 */}
         <button
           className="tb-btn"
           onClick={() => setIsMagnifierActive(!isMagnifierActive)}
-          title={isMagnifierActive ? "돋보기 끄기" : "직사각형 한자 돋보기 키기"}
+          title={isMagnifierActive ? "돋보기 끄기" : "대형 직사각형 한자 돋보기 키기"}
           style={{
             background: isMagnifierActive ? '#2b5c4f' : 'transparent',
             color: isMagnifierActive ? '#ffffff' : '#6b7080'
@@ -712,7 +735,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 3</h1>
+          <h1 className="shelf-title">PDF SHELF 4</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
