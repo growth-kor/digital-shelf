@@ -79,7 +79,7 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (W/A/S/D 게이머 키 & 무손구조 돋보기)
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (휠 스크롤 동적 돋보기 & WASD 올바른 매핑)
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -89,10 +89,32 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [isMagnifierActive, setIsMagnifierActive] = useState(false);
   const [isOverPage, setIsOverPage] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1000, y: -1000 });
+  const [magnifierScale, setMagnifierScale] = useState(1.0); // 돋보기 렌즈 크기 비율 (0.6 ~ 1.8배)
   
   const timerRef = useRef(null);
   const lensCanvasRef = useRef(null);
   const numPages = pdfDoc.numPages;
+
+  // 동적 돋보기 크기 계산
+  const lensW = Math.round(360 * magnifierScale);
+  const lensH = Math.round(200 * magnifierScale);
+
+  // 마우스 휠 조작으로 돋보기 렌즈 크기 실시간 조절
+  useEffect(() => {
+    if (!isMagnifierActive) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      if (e.deltaY < 0) {
+        // 휠 올림 -> 돋보기 렌즈 확대
+        setMagnifierScale(prev => Math.min(prev + 0.1, 1.8));
+      } else if (e.deltaY > 0) {
+        // 휠 내림 -> 돋보기 렌즈 축소
+        setMagnifierScale(prev => Math.max(prev - 0.1, 0.6));
+      }
+    };
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    return () => window.removeEventListener('wheel', handleWheel);
+  }, [isMagnifierActive]);
 
   // 첫 페이지 종횡비 가져오기 (즉시 계산)
   useEffect(() => {
@@ -187,13 +209,13 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     }
   };
 
-  // 돋보기 대형 렌즈(360x200) 실시간 2.6배 고화질 크롭 렌더링
+  // 돋보기 실시간 2.6배 고화질 크롭 렌더링 (동적 렌즈 규격 지원)
   useEffect(() => {
     if (!isMagnifierActive || !isOverPage) return;
     const lensCanvas = lensCanvasRef.current;
     if (!lensCanvas) return;
     const ctx = lensCanvas.getContext('2d');
-    ctx.clearRect(0, 0, 360, 200);
+    ctx.clearRect(0, 0, lensW, lensH);
 
     const pageCanvases = document.querySelectorAll('.pdf-page-canvas');
     pageCanvases.forEach(sourceCanvas => {
@@ -207,20 +229,20 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
         const clickX = (mousePos.x - rect.left) * scaleX;
         const clickY = (mousePos.y - rect.top) * scaleY;
 
-        const zoom = 2.6; // 2.6배 시원하고 큼직하게 확대
-        const sw = (360 / zoom) * scaleX;
-        const sh = (200 / zoom) * scaleY;
+        const zoom = 2.6;
+        const sw = (lensW / zoom) * scaleX;
+        const sh = (lensH / zoom) * scaleY;
         const sx = clickX - sw / 2;
         const sy = clickY - sh / 2;
 
         try {
-          ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, 360, 200);
+          ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, lensW, lensH);
         } catch (e) {
           console.error("Magnifier draw failure:", e);
         }
       }
     });
-  }, [mousePos, isMagnifierActive, isOverPage]);
+  }, [mousePos, isMagnifierActive, isOverPage, lensW, lensH]);
 
   const turnNext = () => {
     if (!showTwoPage) {
@@ -254,12 +276,18 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     }
   };
 
-  // 키보드 조작: 방향키 + 게이머 커스텀 키 (W/A/S/D) 지원!
+  // 키보드 조작: 방향키 + W(다음 페이지), S(이전 페이지) 올바른 매핑!
   useEffect(() => {
     const handleKeyDown = (e) => {
       const k = e.key.toLowerCase();
-      if (k === 'arrowright' || k === 'space' || k === 'd' || k === 's') { turnNext(); }
-      if (k === 'arrowleft' || k === 'w' || k === 'a') { turnPrev(); }
+      // W / D / ArrowRight / Space / PageDown -> 다음 페이지
+      if (k === 'w' || k === 'd' || k === 'arrowright' || k === 'space' || k === 'pagedown') { 
+        turnNext(); 
+      }
+      // S / A / ArrowLeft / PageUp -> 이전 페이지
+      if (k === 's' || k === 'a' || k === 'arrowleft' || k === 'pageup') { 
+        turnPrev(); 
+      }
       if (e.key === 'Escape') { onClose(); }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -270,15 +298,15 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     <div className="reader-screen" onMouseMove={handleMouseMove}>
       <button className="reader-close" onClick={onClose}><X size={18} /></button>
 
-      {/* PDF 페이지 영역 안에서만 나타나는 대형 직사각형 돋보기 렌즈 (360x200) */}
+      {/* PDF 페이지 영역 안에서만 나타나는 동적 조절 대형 돋보기 렌즈 */}
       {isMagnifierActive && isOverPage && (
         <div
           style={{
             position: 'fixed',
-            left: mousePos.x - 180,
-            top: mousePos.y - 100,
-            width: 360,
-            height: 200,
+            left: mousePos.x - lensW / 2,
+            top: mousePos.y - lensH / 2,
+            width: lensW,
+            height: lensH,
             borderRadius: 16,
             border: '2.5px solid #2b5c4f',
             boxShadow: '0 16px 40px rgba(0, 0, 0, 0.35)',
@@ -288,21 +316,21 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
             background: '#ffffff'
           }}
         >
-          <canvas ref={lensCanvasRef} width={360} height={200} style={{ width: '100%', height: '100%', display: 'block' }} />
+          <canvas ref={lensCanvasRef} width={lensW} height={lensH} style={{ width: '100%', height: '100%', display: 'block' }} />
         </div>
       )}
 
-      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (돋보기 작동 시 손가락/십자가 커서 무소유 숨김) */}
+      {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 */}
       <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
         <div
           style={{ flex: 1, cursor: isMagnifierActive && isOverPage ? 'none' : 'pointer' }}
           onClick={turnPrev}
-          title={isMagnifierActive ? '' : '이전 페이지 (← / W)'}
+          title={isMagnifierActive ? '' : '이전 페이지 (S / A / ←)'}
         />
         <div
           style={{ flex: 1, cursor: isMagnifierActive && isOverPage ? 'none' : 'pointer' }}
           onClick={turnNext}
-          title={isMagnifierActive ? '' : '다음 페이지 (→ / D)'}
+          title={isMagnifierActive ? '' : '다음 페이지 (W / D / →)'}
         />
       </div>
 
@@ -349,7 +377,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           transition: 'all 0.3s ease'
         }}
       >
-        <button className="tb-btn" onClick={turnPrev} title="이전 (← / W)"><ChevronLeft size={20} /></button>
+        <button className="tb-btn" onClick={turnPrev} title="이전 (S / A / ←)"><ChevronLeft size={20} /></button>
         <div className="tb-divider" />
         <div className="tb-page-jump">
           <input
@@ -373,11 +401,11 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           {isTwoPage ? '2P' : '1P'}
         </button>
         <div className="tb-divider" />
-        {/* 대형 직사각형 돋보기 온/오프 버튼 */}
+        {/* 대형 동적 돋보기 온/오프 버튼 */}
         <button
           className="tb-btn"
           onClick={() => setIsMagnifierActive(!isMagnifierActive)}
-          title={isMagnifierActive ? "돋보기 끄기" : "대형 직사각형 한자 돋보기 키기"}
+          title={isMagnifierActive ? "돋보기 끄기" : "휠 스크롤 조절 돋보기 키기"}
           style={{
             background: isMagnifierActive ? '#2b5c4f' : 'transparent',
             color: isMagnifierActive ? '#ffffff' : '#6b7080'
@@ -390,7 +418,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           <Maximize2 size={18} />
         </button>
         <div className="tb-divider" />
-        <button className="tb-btn" onClick={turnNext} title="다음 (→ / D)"><ChevronRight size={20} /></button>
+        <button className="tb-btn" onClick={turnNext} title="다음 (W / D / →)"><ChevronRight size={20} /></button>
       </div>
     </div>
   );
@@ -772,7 +800,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 5</h1>
+          <h1 className="shelf-title">PDF SHELF 6</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
