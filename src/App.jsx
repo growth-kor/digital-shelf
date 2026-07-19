@@ -9,11 +9,12 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-// 관리자 및 지정된 친구 이메일 목록
 const AUTHORIZED_EMAILS = [
   'skateboard4335@gmail.com',
   'jeki4332@gmail.com'
 ];
+
+const fileCache = new Map();
 
 const Page = React.forwardRef(({ pdfDoc, number, pageHeight }, ref) => {
   const canvasRef = useRef(null);
@@ -156,32 +157,41 @@ export default function App() {
       const aspect = vp.width / vp.height; // 단일 페이지 비율
 
       const isFull = !!document.fullscreenElement;
-      // 상하좌우 여백을 최소화하여 정중앙 배치
-      const maxH = Math.max(300, window.innerHeight - (isFull ? 12 : 36)); 
-      const maxW = Math.max(400, window.innerWidth - (isFull ? 12 : 24));  
+      // UI 도구 모음(툴바, 닫기 버튼)을 피하기 위한 여백 최적화
+      const topSpace = isFull ? 0 : 54; 
+      const bottomSpace = isFull ? 0 : 64; 
+      
+      const maxH = Math.max(300, window.innerHeight - topSpace - bottomSpace); 
+      const maxW = Math.max(300, window.innerWidth - (isFull ? 0 : 16));  
 
-      let pageH_A = maxH;
-      let pageW_A = pageH_A * aspect;
-      let validA = (pageW_A * 2 <= maxW);
-
-      let pageW_B = maxW / 2;
-      let pageH_B = pageW_B / aspect;
-      let validB = (pageH_B <= maxH);
+      const isPortrait = window.innerWidth < window.innerHeight;
 
       let finalW, finalH;
 
-      if (validA && validB) {
-        const areaA = (pageW_A * 2) * pageH_A;
-        const areaB = (pageW_B * 2) * pageH_B;
-        if (areaA >= areaB) {
-          finalW = pageW_A; finalH = pageH_A;
-        } else {
-          finalW = pageW_B; finalH = pageH_B;
-        }
-      } else if (validA) {
-        finalW = pageW_A; finalH = pageH_A;
+      if (isPortrait) {
+        // 모바일/태블릿 세로 모드: 단일 페이지 화면 꽉 채우기
+        let pageH_A = maxH;
+        let pageW_A = pageH_A * aspect;
+        let validA = (pageW_A <= maxW);
+
+        let pageW_B = maxW;
+        let pageH_B = pageW_B / aspect;
+        let validB = (pageH_B <= maxH);
+
+        if (validA) { finalW = pageW_A; finalH = pageH_A; }
+        else { finalW = pageW_B; finalH = pageH_B; }
       } else {
-        finalW = pageW_B; finalH = pageH_B;
+        // PC 가로 모드: 2페이지 펼침 화면 최대화
+        let pageH_A = maxH;
+        let pageW_A = pageH_A * aspect;
+        let validA = (pageW_A * 2 <= maxW);
+
+        let pageW_B = maxW / 2;
+        let pageH_B = pageW_B / aspect;
+        let validB = (pageH_B <= maxH);
+
+        if (validA) { finalW = pageW_A; finalH = pageH_A; }
+        else { finalW = pageW_B; finalH = pageH_B; }
       }
 
       setDimensions({
@@ -209,11 +219,14 @@ export default function App() {
     setIsOpening(true);
     setDownloadProgress('0%');
     
+    const cacheKey = `${selectedBook.title}_${selectedBook.size}`;
+    const instantUrl = fileCache.get(cacheKey) || selectedBook.url;
+
     const loadingTask = pdfjsLib.getDocument({ 
-      url: selectedBook.url, 
+      url: instantUrl, 
       cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/', 
       cMapPacked: true,
-      rangeChunkSize: 65536 * 16, // 1MB 청크 단위 속도 최적화
+      disableRange: true, // 여러 번 쪼개서 요청하지 않고 한 번에 통째로 다운로드하여 속도 극대화
       disableAutoFetch: false,
       disableStream: false
     });
@@ -328,6 +341,10 @@ export default function App() {
     const targetFile = file || pendingFile;
     if (!targetFile || !user) return;
     setPendingFile(null);
+
+    // 업로드 즉시 로컬 메모리에 캐싱하여 다운로드 대기 시간 0초 달성
+    const cacheKey = `${targetFile.name}_${targetFile.size}`;
+    fileCache.set(cacheKey, URL.createObjectURL(targetFile));
 
     setUploading(true); 
     setProgress(0);
@@ -621,7 +638,7 @@ export default function App() {
         <button className="reader-close" onClick={() => setSelectedBook(null)}><X size={18} /></button>
         {pdfDoc && (
           <>
-            {/* showCover={false}로 설정하여 정중앙에 100% PERFECTLY CENTERED 배치 */}
+            {/* 첫 페이지를 표지(가운데)로 배치하고, 세로 모드일 때는 단일 페이지 뷰어로 자동 전환 */}
             <div className="flipbook-wrap">
               <HTMLFlipBook
                 key={`${dimensions.width}-${dimensions.height}`}
@@ -630,7 +647,8 @@ export default function App() {
                 size="fixed"
                 minWidth={200} maxWidth={3200}
                 minHeight={300} maxHeight={4000}
-                showCover={false}
+                showCover={true}
+                usePortrait={true}
                 maxShadowOpacity={0.35}
                 mobileScrollSupport={true}
                 ref={bookRef}>
