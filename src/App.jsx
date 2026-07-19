@@ -3,7 +3,7 @@ import { db, storage, auth, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, getDocs, query, orderBy, where, doc, runTransaction, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Book as BookIcon, Plus, ChevronLeft, ChevronRight, Maximize2, X, ArrowRight, Upload, Trash2, Zap, Cloud } from 'lucide-react';
+import { Book as BookIcon, Plus, ChevronLeft, ChevronRight, Maximize2, X, ArrowRight, Upload, Trash2, Zap, Cloud, ZoomIn } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -65,19 +65,23 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
       overflow: 'hidden', boxShadow, transition: 'all 0.15s ease',
       borderRadius: shadowType === 'left' ? '4px 0 0 4px' : (shadowType === 'right' ? '0 4px 4px 0' : '4px')
     }}>
-      <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+      <canvas ref={canvasRef} className="pdf-page-canvas" style={{ width: '100%', height: '100%', display: 'block' }} />
     </div>
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (직사각형 돋보기 포함)
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
   const [showToolbar, setShowToolbar] = useState(true);
   const [pageAspect, setPageAspect] = useState(0.707); // 기본 A4 비율
   const [dimensions, setDimensions] = useState({ singleW: 400, singleH: 600 });
+  const [isMagnifierActive, setIsMagnifierActive] = useState(false);
+  const [mousePos, setMousePos] = useState({ x: -1000, y: -1000 });
+  
   const timerRef = useRef(null);
+  const lensCanvasRef = useRef(null);
   const numPages = pdfDoc.numPages;
 
   // 첫 페이지 종횡비 가져오기
@@ -106,7 +110,6 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
       let singleW, singleH;
 
       if (showTwoPage) {
-        // 2페이지 양면 모드: 두 페이지가 maxW, maxH 공간 안에 꽉 차도록 계산
         const doubleAspect = pageAspect * 2;
         let h_A = maxH;
         let w_A_total = h_A * doubleAspect;
@@ -120,7 +123,6 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           singleH = singleW / pageAspect;
         }
       } else {
-        // 1페이지 모드: 단일 페이지가 maxW, maxH 공간 안에 꽉 차도록 계산
         let h_A = maxH;
         let w_A = h_A * pageAspect;
 
@@ -148,13 +150,51 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     };
   }, [pageAspect, showTwoPage]);
 
-  const handleMouseMove = () => {
+  // 마우스 이동 감지 (툴바 자동 숨김 & 돋보기 위치 추적)
+  const handleMouseMove = (e) => {
     setShowToolbar(true);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setShowToolbar(false);
     }, 2500);
+
+    setMousePos({ x: e.clientX, y: e.clientY });
   };
+
+  // 돋보기 실시간 2.5배 고화질 크롭 렌더링
+  useEffect(() => {
+    if (!isMagnifierActive) return;
+    const lensCanvas = lensCanvasRef.current;
+    if (!lensCanvas) return;
+    const ctx = lensCanvas.getContext('2d');
+    ctx.clearRect(0, 0, 240, 140);
+
+    const pageCanvases = document.querySelectorAll('.pdf-page-canvas');
+    pageCanvases.forEach(sourceCanvas => {
+      const rect = sourceCanvas.getBoundingClientRect();
+      if (
+        mousePos.x >= rect.left && mousePos.x <= rect.right &&
+        mousePos.y >= rect.top && mousePos.y <= rect.bottom
+      ) {
+        const scaleX = sourceCanvas.width / rect.width;
+        const scaleY = sourceCanvas.height / rect.height;
+        const clickX = (mousePos.x - rect.left) * scaleX;
+        const clickY = (mousePos.y - rect.top) * scaleY;
+
+        const zoom = 2.2;
+        const sw = (240 / zoom) * scaleX;
+        const sh = (140 / zoom) * scaleY;
+        const sx = clickX - sw / 2;
+        const sy = clickY - sh / 2;
+
+        try {
+          ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, 240, 140);
+        } catch (e) {
+          console.error("Magnifier draw failure:", e);
+        }
+      }
+    });
+  }, [mousePos, isMagnifierActive]);
 
   const turnNext = () => {
     if (!showTwoPage) {
@@ -199,13 +239,35 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   }, [currentPage, showTwoPage, numPages]);
 
   return (
-    <div className="reader-screen" onMouseMove={handleMouseMove}>
+    <div className="reader-screen" onMouseMove={handleMouseMove} style={{ cursor: isMagnifierActive ? 'crosshair' : 'default' }}>
       <button className="reader-close" onClick={onClose}><X size={18} /></button>
+
+      {/* 직사각형 돋보기 렌즈 (마우스 커서 따라 이동) */}
+      {isMagnifierActive && (
+        <div
+          style={{
+            position: 'fixed',
+            left: mousePos.x - 120,
+            top: mousePos.y - 70,
+            width: 240,
+            height: 140,
+            borderRadius: 14,
+            border: '2.5px solid #2b5c4f',
+            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.35)',
+            overflow: 'hidden',
+            pointerEvents: 'none',
+            zIndex: 100,
+            background: '#ffffff'
+          }}
+        >
+          <canvas ref={lensCanvasRef} width={240} height={140} style={{ width: '100%', height: '100%', display: 'block' }} />
+        </div>
+      )}
 
       {/* 화면 좌우 영역 클릭 시 즉시 페이지 이동 (zIndex 25) */}
       <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 25 }}>
-        <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnPrev} title="이전 페이지 (←)" />
-        <div style={{ flex: 1, cursor: 'pointer' }} onClick={turnNext} title="다음 페이지 (→)" />
+        <div style={{ flex: 1, cursor: isMagnifierActive ? 'crosshair' : 'pointer' }} onClick={turnPrev} title="이전 페이지 (←)" />
+        <div style={{ flex: 1, cursor: isMagnifierActive ? 'crosshair' : 'pointer' }} onClick={turnNext} title="다음 페이지 (→)" />
       </div>
 
       {/* PDF 뷰어 메인 공간 (100% 정중앙 플렉스 레이아웃) */}
@@ -273,6 +335,19 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
           style={{ fontSize: '11px', fontStyle: 'normal', fontWeight: 800, color: isTwoPage ? '#2b5c4f' : '#6b7080' }}
         >
           {isTwoPage ? '2P' : '1P'}
+        </button>
+        <div className="tb-divider" />
+        {/* 직사각형 돋보기 온/오프 버튼 */}
+        <button
+          className="tb-btn"
+          onClick={() => setIsMagnifierActive(!isMagnifierActive)}
+          title={isMagnifierActive ? "돋보기 끄기" : "직사각형 한자 돋보기 키기"}
+          style={{
+            background: isMagnifierActive ? '#2b5c4f' : 'transparent',
+            color: isMagnifierActive ? '#ffffff' : '#6b7080'
+          }}
+        >
+          <ZoomIn size={18} />
         </button>
         <div className="tb-divider" />
         <button className="tb-btn" onClick={() => !document.fullscreenElement ? document.documentElement.requestFullscreen() : document.exitFullscreen()} title="전체화면">
@@ -637,7 +712,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 2</h1>
+          <h1 className="shelf-title">PDF SHELF 3</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
