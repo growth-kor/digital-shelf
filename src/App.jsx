@@ -15,7 +15,6 @@ const AUTHORIZED_EMAILS = [
 
 const fileCache = new Map();
 const localFileMap = new Map();
-const CACHE_NAME = 'pdf-shelf-persistent-v1';
 
 // 고화질 단일 PDF 페이지 렌더링 캔버스 컴포넌트 (100% 정밀 핏 & 하단 여백 완벽 제거)
 function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
@@ -80,7 +79,7 @@ function PdfCanvasPage({ pdfDoc, pageNum, width, height, shadowType }) {
   );
 }
 
-// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어
+// 100% 정중앙, 화면 최대 정밀 규격 자동 계산 커스텀 PDF 뷰어 (최대 3배 울트라 초대형 돋보기)
 function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('');
@@ -90,32 +89,32 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
   const [isMagnifierActive, setIsMagnifierActive] = useState(false);
   const [isOverPage, setIsOverPage] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1000, y: -1000 });
-  const [magnifierScale, setMagnifierScale] = useState(1.0); // 돋보기 렌즈 크기 비율 (0.6 ~ 1.8배)
+  const [magnifierScale, setMagnifierScale] = useState(1.0); // 돋보기 렌즈 크기 비율 (0.6 ~ 3.0배)
   
   const timerRef = useRef(null);
   const lensCanvasRef = useRef(null);
   const numPages = pdfDoc.numPages;
 
-  // 동적 돋보기 크기 계산
-  const lensW = Math.round(360 * magnifierScale);
-  const lensH = Math.round(200 * magnifierScale);
+  // 동적 초대형 돋보기 크기 계산 (기본 380x220 -> 최대 1140x660까지 조절 가능!)
+  const lensW = Math.round(380 * magnifierScale);
+  const lensH = Math.round(220 * magnifierScale);
 
-  // 마우스 휠 조작으로 돋보기 렌즈 크기 실시간 조절
+  // 마우스 휠 조작으로 돋보기 렌즈 크기 실시간 조절 (최대 3.0배까지 확장!)
   useEffect(() => {
     if (!isMagnifierActive) return;
     const handleWheel = (e) => {
       e.preventDefault();
       if (e.deltaY < 0) {
-        setMagnifierScale(prev => Math.min(prev + 0.1, 1.8));
+        setMagnifierScale(prev => Math.min(prev + 0.15, 3.0));
       } else if (e.deltaY > 0) {
-        setMagnifierScale(prev => Math.max(prev - 0.1, 0.6));
+        setMagnifierScale(prev => Math.max(prev - 0.15, 0.6));
       }
     };
     window.addEventListener('wheel', handleWheel, { passive: false });
     return () => window.removeEventListener('wheel', handleWheel);
   }, [isMagnifierActive]);
 
-  // 첫 페이지 종횡비 가져오기 (즉시 계산)
+  // 첫 페이지 종횡비 가져오기
   useEffect(() => {
     if (pdfDoc) {
       pdfDoc.getPage(1).then(page => {
@@ -183,7 +182,7 @@ function CustomPdfReader({ pdfDoc, onClose, isTwoPage, setIsTwoPage }) {
     };
   }, [pageAspect, showTwoPage, pdfDoc, isTwoPage, currentPage]);
 
-  // 마우스 이동 감지 (툴바 자동 숨김 & PDF 영역 위에서만 돋보기 활성화)
+  // 마우스 이동 감지
   const handleMouseMove = (e) => {
     setShowToolbar(true);
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -542,38 +541,21 @@ export default function App() {
       });
       
       setBooks(fetchedBooks);
-
-      // 백그라운드 영구 캐싱 (Idle 사전 다운로드로 다음 클릭 시 0초 로딩)
-      if ('caches' in window) {
-        window.caches.open(CACHE_NAME).then(cache => {
-          fetchedBooks.forEach(b => {
-            if (b.url) {
-              cache.match(b.url).then(match => {
-                if (!match) {
-                  fetch(b.url).then(res => {
-                    if (res.ok) cache.put(b.url, res.clone());
-                  }).catch(() => {});
-                }
-              });
-            }
-          });
-        });
-      }
     } catch (err) {
       console.error("fetchBooks error:", err);
       alert("도서 목록 로드 실패: " + err.message);
     }
   };
 
-  // 초고속 PDF 오픈 (영구 브라우저 디스크 캐시 Cache API & 100% 대역폭 0초 로딩)
+  // 초고속 & 100% 안정적인 PDF 로더 (CORS/Cache API 에러 완벽 차단 & 0초 메모리 캐싱)
   useEffect(() => {
     if (!selectedBook) { setPdfDoc(null); return; }
     setIsOpening(true);
     setDownloadProgress('0%');
 
     const cacheKey = `${selectedBook.id || selectedBook.title}_${selectedBook.size}`;
-    
-    // 1. 메모리 캐시(fileCache)에 이미 들어있는 경우 즉시 오픈
+
+    // 1. 메모리 캐시에 이미 들어있는 경우 0.00초 즉시 오픈
     if (fileCache.has(cacheKey)) {
       const cachedBuf = fileCache.get(cacheKey);
       const loadingTask = pdfjsLib.getDocument({
@@ -584,6 +566,9 @@ export default function App() {
       loadingTask.promise.then(pdf => {
         setPdfDoc(pdf);
         setTimeout(() => setIsOpening(false), 30);
+      }).catch(() => {
+        fileCache.delete(cacheKey);
+        loadPdfFromUrl(selectedBook.url, cacheKey);
       });
       return;
     }
@@ -602,88 +587,56 @@ export default function App() {
           setPdfDoc(pdf);
           setTimeout(() => setIsOpening(false), 30);
         });
+      }).catch(() => {
+        loadPdfFromUrl(selectedBook.url, cacheKey);
       });
       return;
     }
 
-    // 3. 영구 Cache API (디스크 캐시)에서 사전 로딩된 데이터 확인 (0.00초 즉시 오픈)
-    if ('caches' in window && selectedBook.url) {
-      caches.open(CACHE_NAME).then(cache => {
-        cache.match(selectedBook.url).then(async match => {
-          if (match) {
-            const buf = await match.arrayBuffer();
-            fileCache.set(cacheKey, buf);
-            const loadingTask = pdfjsLib.getDocument({
-              data: new Uint8Array(buf),
-              cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
-              cMapPacked: true,
-            });
-            const pdf = await loadingTask.promise;
-            setPdfDoc(pdf);
-            setTimeout(() => setIsOpening(false), 30);
-          } else {
-            // 디스크 캐시에 없으면 초고속 스트림 Fetch로 전속력 다운로드 후 캐싱
-            fetchCloudPdf(selectedBook, cacheKey, cache);
-          }
-        }).catch(() => fetchCloudPdf(selectedBook, cacheKey, null));
-      }).catch(() => fetchCloudPdf(selectedBook, cacheKey, null));
-      return;
-    }
+    // 3. 클라우드 URL인 경우 PDF.js 내장 100% 안정적 스트림 수신기 로딩
+    loadPdfFromUrl(selectedBook.url, cacheKey);
 
-    fetchCloudPdf(selectedBook, cacheKey, null);
   }, [selectedBook]);
 
-  // 클라우드 PDF 전속력 스트림 다운로드 함수
-  const fetchCloudPdf = (book, cacheKey, persistentCache) => {
-    fetch(book.url)
-      .then(async response => {
-        if (persistentCache) {
-          persistentCache.put(book.url, response.clone());
-        }
-        const contentLength = response.headers.get('content-length');
-        const total = contentLength ? parseInt(contentLength, 10) : book.size || 0;
-        const reader = response.body.getReader();
-        let receivedLength = 0;
-        let chunks = [];
+  const loadPdfFromUrl = (url, cacheKey) => {
+    if (!url) {
+      alert("올바르지 않은 PDF URL입니다.");
+      setIsOpening(false);
+      setSelectedBook(null);
+      return;
+    }
 
-        while(true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          receivedLength += value.length;
-          if (total > 0) {
-            const percent = Math.round((receivedLength / total) * 100);
-            setDownloadProgress(`${percent}%`);
-          } else {
-            setDownloadProgress(`${(receivedLength / 1024 / 1024).toFixed(1)} MB`);
-          }
-        }
+    const loadingTask = pdfjsLib.getDocument({
+      url,
+      cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
+      cMapPacked: true,
+      disableAutoFetch: false,
+      disableStream: false
+    });
 
-        const chunksAll = new Uint8Array(receivedLength);
-        let position = 0;
-        for(let chunk of chunks) {
-          chunksAll.set(chunk, position);
-          position += chunk.length;
-        }
+    loadingTask.onProgress = (progressData) => {
+      if (progressData.total > 0) {
+        const percent = Math.round((progressData.loaded / progressData.total) * 100);
+        setDownloadProgress(`${percent}%`);
+      } else {
+        const loadedMB = (progressData.loaded / 1024 / 1024).toFixed(1);
+        setDownloadProgress(`${loadedMB} MB`);
+      }
+    };
 
-        const buf = chunksAll.buffer;
-        fileCache.set(cacheKey, buf);
-
-        const loadingTask = pdfjsLib.getDocument({
-          data: chunksAll,
-          cMapUrl: 'https://unpkg.com/pdfjs-dist@5.5.207/cmaps/',
-          cMapPacked: true,
-        });
-        const pdf = await loadingTask.promise;
-        setPdfDoc(pdf);
-        setTimeout(() => setIsOpening(false), 30);
-      })
-      .catch(err => {
-        console.error("Cloud PDF fetch error:", err);
-        alert("PDF 로드 실패: " + err.message);
-        setIsOpening(false);
-        setSelectedBook(null);
-      });
+    loadingTask.promise.then(async pdf => {
+      setPdfDoc(pdf);
+      setTimeout(() => setIsOpening(false), 30);
+      try {
+        const data = await pdf.getData();
+        if (data) fileCache.set(cacheKey, data.buffer);
+      } catch (e) {}
+    }).catch(err => {
+      console.error("PDF load error:", err);
+      alert("PDF 로드 실패: " + err.message);
+      setIsOpening(false);
+      setSelectedBook(null);
+    });
   };
 
   const handleDragEnter = (e) => {
@@ -884,7 +837,7 @@ export default function App() {
         )}
         
         <header className="shelf-header">
-          <h1 className="shelf-title">PDF SHELF 7</h1>
+          <h1 className="shelf-title">PDF SHELF 8</h1>
           <div className="shelf-header-right">
             <div className="user-chip">
               <img src={user.photoURL} className="user-avatar" alt="avatar" />
